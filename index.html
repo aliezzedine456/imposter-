@@ -634,7 +634,7 @@ body {
   font-size: 0.9rem; line-height: 1.45;
 }
 .msg.theirs .msg-bubble { background: var(--bg3); border: 1px solid var(--border); border-radius: 18px 18px 18px 4px; }
-.msg.mine .msg-bubble { background: var(--red); color: #fff; border-radius: 18px 18px 4px 18px; }
+.msg.mine .msg-bubble { background: var(--chat-mine-bg, var(--red)); color: var(--chat-mine-text, #fff); border-radius: 18px 18px 4px 18px; }
 .msg.system .msg-bubble { background: var(--bg3); color: var(--text2); font-size: 0.8rem; border-radius: 10px; border: 1px solid var(--border); padding: 7px 14px; text-align: center; }
 .msg-time { font-size: 0.65rem; color: var(--text3); margin-top: 4px; padding: 0 4px; }
 .chat-input-wrap {
@@ -662,6 +662,24 @@ body {
 }
 .send-btn:active { background: #c62828; transform: scale(0.93); }
 .send-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+
+/* ── GHOST MESSAGES ── */
+.msg.ghost-msg { align-self: center; align-items: center; }
+.ghost-sender { font-size: 0.73rem; color: #a855f7; font-weight: 700; margin-bottom: 3px; letter-spacing: 0.03em; }
+.ghost-bubble { background: linear-gradient(135deg,#2d1b47,#1e1133) !important; color: #d8b4fe !important; border: 1px solid #7c3aed55; border-radius: 18px !important; font-style: italic; }
+
+/* ── EMOJI REACTIONS ── */
+.msg-reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; min-height: 0; }
+.rxn-btn { font-size: 0.78rem; background: var(--bg3); border: 1px solid var(--border); border-radius: 12px; padding: 2px 8px; cursor: pointer; display: flex; align-items: center; gap: 3px; transition: all 0.12s; color: var(--text2); font-weight: 600; }
+.rxn-btn:active { transform: scale(0.88); }
+.rxn-btn.mine { border-color: var(--red); background: var(--red-dim); color: var(--red2); }
+.react-picker { position: fixed; z-index: 999; background: var(--bg2); border: 1px solid var(--border2); border-radius: 32px; padding: 7px 12px; display: flex; gap: 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); animation: bumpIn 0.15s ease; }
+.react-opt { font-size: 1.5rem; cursor: pointer; border-radius: 8px; padding: 2px 4px; transition: transform 0.1s; -webkit-tap-highlight-color: transparent; }
+.react-opt:active { transform: scale(1.35); }
+
+/* ── QUESTION HINTS ── */
+.q-hint-wrap { overflow: hidden; }
+.q-hint { font-size: 0.71rem; color: var(--text3); padding: 3px 8px; background: var(--bg3); border-radius: 6px; border: 1px dashed var(--border2); margin-top: 5px; display: inline-block; transition: opacity 0.4s; cursor: default; user-select: none; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── CHAT ITEMS PANEL ── */
 .chat-plus-btn {
@@ -1152,6 +1170,7 @@ body {
           <div style="color:var(--text3);font-size:0.8rem;font-weight:700">asks</div>
           <div class="turn-name" id="turn-answerer" style="color:var(--blue2)">---</div>
         </div>
+        <div class="q-hint-wrap"><div class="q-hint" id="q-hint-bar" style="display:none"></div></div>
       </div>
       <div class="timer-ring">
         <svg width="44" height="44" viewBox="0 0 44 44">
@@ -2648,7 +2667,7 @@ function beginOnlineChat(d){
       const prev=G.onlineStatus;
       G.onlineStatus=newStatus;
       if(newStatus==='revealing'){ clearInterval(G.timerInt); closeAllModals(); chatStarted=false; G.revealInitialized=false; beginOnlineReveal(ld); return; }
-      if(newStatus==='roundsComplete'){ clearInterval(G.timerInt); closeAllModals(); showRoundsModal(ld); return; }
+      if(newStatus==='roundsComplete'){ clearInterval(G.timerInt); closeAllModals(); setTimeout(()=>showRoundsModal(ld),5000); return; }
       if(newStatus==='voting'){ clearInterval(G.timerInt); closeAllModals(); openVoteModal(); return; }
       if(newStatus==='ended'){ clearInterval(G.timerInt); closeAllModals(); showOnlineVoteResults(ld); return; }
       if(newStatus==='result'){ clearInterval(G.timerInt); closeAllModals(); showOnlineResultFromFirebase(ld); return; }
@@ -2672,6 +2691,9 @@ function beginOnlineChat(d){
     const isAsker=askerUid===G.uid;
     const isAnswerer=answererUid===G.uid;
     const myTurn=phase==='asking'?isAsker:isAnswerer;
+    // Question hints for asker
+    if(isAsker&&phase==='asking') startQHints(G.lobbyCategory||'animals');
+    else stopQHints();
     const activePerson=phase==='asking'?asker:answerer;
     const ci=$('chat-in'),sb=$('send-btn');
     if(ci){
@@ -2685,7 +2707,8 @@ function beginOnlineChat(d){
   });
 
   // Messages
-  db.ref('lobbies/'+G.lobbyCode+'/messages').on('child_added',snap=>appendMsg(snap.val()));
+  db.ref('lobbies/'+G.lobbyCode+'/messages').on('child_added',snap=>appendMsg(snap.val(),snap.key));
+  listenReactions();
 
   // ── VOTE LISTENER (HOST) ──
   // This is the key fix: host watches votes and tallies when all are in
@@ -2918,6 +2941,132 @@ async function advOnlineTurn(){
   await db.ref('lobbies/'+G.lobbyCode).update({currentTurnIdx:idx,round,phase:'asking',turnStartedAt:Date.now()});
 }
 
+// ════════════════════════════════════════
+//  GHOST MESSAGE MODAL
+// ════════════════════════════════════════
+function openGhostMsgModal(){
+  // Close the items panel first
+  const panel=$('chat-items-panel'); if(panel) panel.style.display='none';
+  const pb=$('chat-plus-btn'); if(pb) pb.classList.remove('open');
+  // Build modal overlay
+  const ov=document.createElement('div');
+  ov.className='modal-overlay'; ov.id='ghost-modal';
+  ov.innerHTML=`
+    <div class="modal-box" style="animation:bumpIn 0.2s ease">
+      <div class="modal-title" style="font-size:1.2rem">👻 Ghost Message</div>
+      <div style="font-size:0.82rem;color:var(--text2);margin-bottom:14px">Your message appears as <span style="color:#a855f7;font-weight:700">???</span> — nobody knows it's you</div>
+      <input id="ghost-input" class="chat-field" style="width:100%;margin-bottom:14px;background:var(--bg3)" placeholder="Type something mysterious..." maxlength="120" oninput="" autocomplete="off">
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-outline flex1" onclick="closeGhostModal(true)">Cancel</button>
+        <button class="btn btn-primary flex1" style="background:#6a1b9a;border-color:#6a1b9a" onclick="sendGhostMsg()">👻 Send</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(ov);
+  ov.addEventListener('click',e=>{ if(e.target===ov) closeGhostModal(true); });
+  setTimeout(()=>{ const inp=document.getElementById('ghost-input'); if(inp) inp.focus(); },80);
+  ov.querySelector('#ghost-input').addEventListener('keydown',e=>{ if(e.key==='Enter') sendGhostMsg(); });
+}
+function closeGhostModal(refund){
+  const ov=document.getElementById('ghost-modal'); if(ov) ov.remove();
+  if(refund){ G.itemCounts['ghost_msg']=(G.itemCounts['ghost_msg']||0)+1; /* don't charge */ }
+}
+function sendGhostMsg(){
+  const inp=document.getElementById('ghost-input');
+  if(!inp) return;
+  const txt=inp.value.trim();
+  if(!txt){ inp.style.borderColor='var(--red)'; setTimeout(()=>inp.style.borderColor='',600); return; }
+  closeGhostModal(false);
+  G.itemCounts['ghost_msg']-=1;
+  saveUser(); renderChatItemPanel();
+  db.ref('lobbies/'+G.lobbyCode+'/messages').push({uid:'ghost',username:'???',text:txt,time:Date.now(),ft:ftime(),ghost:true});
+  toast('👻 Ghost message sent!','ok');
+}
+
+// ════════════════════════════════════════
+//  EMOJI REACTIONS
+// ════════════════════════════════════════
+const REACT_EMOJIS=['👍','🤔','👀','😂','🕵️'];
+let reactPickerEl=null, reactionsRef=null;
+
+function showReactPicker(e, msgKey){
+  e.stopPropagation();
+  if(reactPickerEl){ reactPickerEl.remove(); reactPickerEl=null; return; }
+  const picker=document.createElement('div');
+  picker.className='react-picker';
+  REACT_EMOJIS.forEach(em=>{
+    const opt=document.createElement('span');
+    opt.className='react-opt'; opt.textContent=em;
+    opt.addEventListener('click',e2=>{ e2.stopPropagation(); addReaction(msgKey,em); picker.remove(); reactPickerEl=null; });
+    picker.appendChild(opt);
+  });
+  const rect=e.currentTarget.getBoundingClientRect();
+  picker.style.top=Math.max(8,rect.top-58)+'px';
+  picker.style.left=Math.max(8,Math.min(rect.left,window.innerWidth-260))+'px';
+  document.body.appendChild(picker);
+  reactPickerEl=picker;
+  setTimeout(()=>{ const fn=()=>{ picker.remove(); reactPickerEl=null; document.removeEventListener('click',fn); }; document.addEventListener('click',fn,{once:true}); },120);
+}
+
+function addReaction(msgKey,emoji){
+  if(!G.lobbyCode||!msgKey) return;
+  const path='lobbies/'+G.lobbyCode+'/reactions/'+msgKey+'/'+encodeURIComponent(emoji)+'/'+G.uid;
+  db.ref(path).once('value').then(s=>{ if(s.val()) db.ref(path).remove(); else db.ref(path).set(true); });
+}
+
+function listenReactions(){
+  if(!G.lobbyCode||reactionsRef) return;
+  reactionsRef=db.ref('lobbies/'+G.lobbyCode+'/reactions');
+  reactionsRef.on('value',snap=>{
+    const all=snap.val()||{};
+    Object.entries(all).forEach(([msgKey,emojiMap])=>{
+      const bar=document.getElementById('rxn-'+msgKey); if(!bar) return;
+      bar.innerHTML='';
+      Object.entries(emojiMap).forEach(([enc,users])=>{
+        const count=Object.keys(users).length; if(!count) return;
+        const em=decodeURIComponent(enc);
+        const mine=!!(users[G.uid]);
+        const btn=document.createElement('button');
+        btn.className='rxn-btn'+(mine?' mine':'');
+        btn.innerHTML=em+' <span>'+count+'</span>';
+        btn.onclick=e=>{ e.stopPropagation(); addReaction(msgKey,em); };
+        bar.appendChild(btn);
+      });
+    });
+  });
+}
+
+// ════════════════════════════════════════
+//  QUESTION HINTS
+// ════════════════════════════════════════
+const Q_HINTS={
+  animals:['Ask: Does it have fur?','Ask: Is it bigger than a dog?','Ask: Could it be a pet?','Ask: Does it live in water?','Ask: Is it nocturnal?','Ask: Can it fly?','Ask: Is it a predator?'],
+  food:['Ask: Is it sweet?','Ask: Do you cook it?','Ask: Can you eat it raw?','Ask: Is it from Arab cuisine?','Ask: Does it have a strong smell?','Ask: Is it a drink?','Ask: Is it spicy?'],
+  locations:['Ask: Is it in a city?','Ask: Is it hot there?','Ask: Can you swim there?','Ask: Is it famous worldwide?','Ask: Is it indoors?','Ask: Would you honeymoon there?','Ask: Is it in the Gulf?'],
+  clothes:['Ask: Do you wear it every day?','Ask: Is it for winter?','Ask: Does it have buttons?','Ask: Would you wear it to a wedding?','Ask: Is it for men or women?','Ask: Is it tight or loose?'],
+  tech:['Ask: Does it need charging?','Ask: Is it for communication?','Ask: Does it fit in your pocket?','Ask: Was it invented after 2000?','Ask: Is it hardware or software?','Ask: Can a child use it?'],
+  sports:['Ask: Is it a team sport?','Ask: Do you need equipment?','Ask: Is it in the Olympics?','Ask: Is it played on grass?','Ask: Is it popular in Saudi Arabia?','Ask: Is it high-speed?'],
+};
+let qHintTimer=null, qHintIdx=0;
+function startQHints(cat){
+  stopQHints();
+  const hints=Q_HINTS[cat]||Q_HINTS.animals;
+  qHintIdx=Math.floor(Math.random()*hints.length);
+  const bar=$('q-hint-bar'); if(!bar) return;
+  bar.style.display='inline-block';
+  const show=()=>{
+    if(!bar.isConnected){ stopQHints(); return; }
+    bar.style.opacity='0';
+    setTimeout(()=>{ bar.textContent='💡 '+hints[qHintIdx%hints.length]; bar.style.opacity='1'; qHintIdx++; },200);
+  };
+  show();
+  qHintTimer=setInterval(show,9000);
+}
+function stopQHints(){
+  clearInterval(qHintTimer); qHintTimer=null;
+  const bar=$('q-hint-bar'); if(bar){ bar.style.display='none'; bar.textContent=''; }
+}
+
 // ── Chat Item Quick-Use Panel ──────────────────────────────
 function toggleChatItemPanel(){
   const panel=$('chat-items-panel');
@@ -2986,20 +3135,36 @@ async function sendMsg(){
   setTimeout(advOnlineTurn,300);
 }
 
-function appendMsg(msg){
+function appendMsg(msg, msgKey){
   const box=$('chat-msgs'); if(!box) return;
   const isMe=msg.uid===G.uid;
   const isSys=msg.type==='system';
+  const isGhost=msg.uid==='ghost';
   const el=document.createElement('div');
-  el.className='msg '+(isSys?'system':isMe?'mine':'theirs');
+  if(msgKey) el.id='msg-'+msgKey;
+  el.className='msg '+(isSys?'system':isGhost?'ghost-msg':isMe?'mine':'theirs');
   if(isSys){
     el.innerHTML=`<div class="msg-bubble">${esc(msg.text)}</div>`;
-  } else {
+  } else if(isGhost){
     el.innerHTML=`
-      ${!isMe?`<div class="msg-sender">${esc(msg.username)}</div>`:''}
-      <div class="msg-bubble">${esc(msg.text)}</div>
+      <div class="msg-sender ghost-sender">👻 ???</div>
+      <div class="msg-bubble ghost-bubble">${esc(msg.text)}</div>
       <div class="msg-time">${msg.ft||''}</div>
     `;
+  } else {
+    const bubble=`<div class="msg-bubble"${msgKey?` data-key="${msgKey}"`:''}>${esc(msg.text)}</div>`;
+    el.innerHTML=`
+      ${!isMe?`<div class="msg-sender">${esc(msg.username)}</div>`:''}
+      ${bubble}
+      <div class="msg-time">${msg.ft||''}</div>
+      <div class="msg-reactions" id="rxn-${msgKey||''}"></div>
+    `;
+    if(msgKey){
+      setTimeout(()=>{
+        const b=el.querySelector('.msg-bubble');
+        if(b){ b.style.cursor='pointer'; b.addEventListener('click',e=>showReactPicker(e,msgKey),{passive:true}); }
+      },0);
+    }
   }
   box.appendChild(el);
   box.scrollTop=box.scrollHeight;
@@ -3075,21 +3240,10 @@ function showRoundsModal(ld){
   if(body) body.textContent=`${rounds} rounds done — what's next?`;
   const btns=$('rounds-modal-btns'); if(!btns) return;
   if(G.isHost){
-    // 5-second countdown so host can review the last answer before deciding
-    let secs=5;
-    btns.innerHTML=`<div style="text-align:center;padding:8px 0"><div style="font-size:2rem;line-height:1;font-weight:900" id="rm-countdown">${secs}</div><div style="font-size:0.78rem;color:var(--text2);margin-top:4px">Review the last answer…</div></div>`;
-    const cd=setInterval(()=>{
-      secs--;
-      const el=$('rm-countdown');
-      if(el) el.textContent=secs;
-      if(secs<=0){
-        clearInterval(cd);
-        if(btns) btns.innerHTML=`
-          <button class="btn btn-primary" onclick="continueOnlineRounds()">➕ 5 More Rounds</button>
-          <button class="btn btn-danger" onclick="callOnlineVote()">🗳️ Vote Now!</button>
-        `;
-      }
-    },1000);
+    btns.innerHTML=`
+      <button class="btn btn-primary" onclick="continueOnlineRounds()">➕ 5 More Rounds</button>
+      <button class="btn btn-danger" onclick="callOnlineVote()">🗳️ Vote Now!</button>
+    `;
   } else {
     btns.innerHTML=`<div class="text-xs" style="color:var(--text3);padding:10px 0">Waiting for host to decide...</div>`;
   }
@@ -3302,14 +3456,7 @@ function useItem(item){
     case 'ghost_msg':
       if(!(G.itemCounts['ghost_msg']||0)){ toast('No ghost messages!','err'); return; }
       if(!G.lobbyCode||!chatStarted){ toast('Use during online chat!','err'); return; }
-      G.itemCounts['ghost_msg']--;
-      saveUser(); renderShop();
-      { const txt=prompt('👻 Type your anonymous message:');
-        if(txt&&txt.trim()){
-          db.ref('lobbies/'+G.lobbyCode+'/messages').push({uid:'ghost',username:'???',text:txt.trim(),time:Date.now(),ft:ftime()});
-          toast('👻 Ghost message sent!','ok');
-        } else { G.itemCounts['ghost_msg']++; saveUser(); renderShop(); }
-      }
+      openGhostMsgModal();
       break;
     case 'double_vote':
       if(!(G.itemCounts['double_vote']||0)){ toast('No double vote tokens!','err'); return; }
@@ -3416,17 +3563,18 @@ async function equipTheme(val){
 
 function applyTheme(){
   const themes={
-    dark_red:{bubble:'#e53935'},
-    blue:{bubble:'#1e88e5'},
-    green:{bubble:'#388e3c'},
-    amber:{bubble:'#f57c00'},
-    purple:{bubble:'#7c3aed'},
-    white:{bubble:'#444',text:'#fff'},
+    dark_red:{bubble:'#c62828',text:'#fff'},
+    blue:    {bubble:'#1565c0',text:'#fff'},
+    green:   {bubble:'#2e7d32',text:'#fff'},
+    amber:   {bubble:'#e65100',text:'#fff'},
+    purple:  {bubble:'#6a1b9a',text:'#fff'},
+    white:   {bubble:'#e8e8e8',text:'#111'},
   };
-  const t=themes[G.theme]||{bubble:'#e53935'};
-  document.documentElement.style.setProperty('--chat-mine-bg',t.bubble);
-  document.querySelectorAll('.msg.mine .msg-bubble').forEach(b=>{ b.style.background=t.bubble; if(t.text) b.style.color=t.text; });
+  const t=themes[G.theme]||{bubble:'#c62828',text:'#fff'};
+  document.documentElement.style.setProperty('--chat-mine-bg', t.bubble);
+  document.documentElement.style.setProperty('--chat-mine-text', t.text);
   const sb=$('send-btn'); if(sb) sb.style.background=t.bubble;
+  const pb=$('chat-plus-btn'); if(pb) pb.style.setProperty('--active-color',t.bubble);
 }
 
 // ════════════════════════════════════════
@@ -3479,7 +3627,7 @@ async function loadLb(){
   const w=$('lb-wrap');
   w.innerHTML='<div class="loader"><div class="spin"></div></div>';
   try {
-    const snap=await db.ref('users').orderByChild('xp').limitToLast(25).once('value');
+    const snap=await db.ref('users').orderByChild('xp').limitToLast(30).once('value');
     const users=[];
     snap.forEach(s=>{ const v=s.val(); if(v&&v.username) users.push(v); });
     users.sort((a,b)=>(b.xp||0)-(a.xp||0));
