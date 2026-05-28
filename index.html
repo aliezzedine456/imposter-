@@ -1600,6 +1600,9 @@ body {
       </div>
       <div class="stack">
         <button class="btn btn-primary" onclick="startVoting()">🗳️ &nbsp;Vote!</button>
+        <div id="extra-round-wrap" style="display:none">
+          <button class="btn btn-outline" onclick="useExtraRound()" style="border-color:var(--blue2);color:var(--blue2)">⏱️ &nbsp;Use Extra Round (×<span id="extra-round-count">0</span>)</button>
+        </div>
         <button class="btn btn-ghost" onclick="noVoteEnd()">End game (no vote)</button>
       </div>
     </div>
@@ -1665,7 +1668,12 @@ body {
       </div>
       <div class="guess-grid" id="guess-choices"></div>
 
-      <div style="height:16px"></div>
+      <div style="height:12px"></div>
+      <div id="lucky-guess-wrap" style="display:none;margin-bottom:8px">
+        <button class="btn btn-outline btn-sm" id="lucky-guess-btn" onclick="useLuckyGuess()" style="border-color:var(--green);color:var(--green2);font-size:0.82rem">
+          🍀 &nbsp;Use Lucky Guess (×<span id="lucky-count">0</span>)
+        </button>
+      </div>
       <button class="btn btn-primary" id="submit-guess-btn" onclick="submitGuess()" disabled>Confirm Answer</button>
       <div style="height:8px"></div>
       <button class="btn btn-ghost" onclick="giveUp()">I have no idea</button>
@@ -1886,14 +1894,22 @@ const CAT_EMOJIS = { animals:'🦁', clothes:'👗', food:'🍕', locations:'�
 const AVATARS = ['😎','🦊','🐯','🦁','🐸','🦝','🐺','🦄','🐲','🤖','👾','🎭','🧙','🥷','👻'];
 
 const SHOP = [
-  {id:'theme_dark_red',name:'Dark Red',desc:'Deep red chat bubbles',price:150,icon:'❤️',type:'theme',val:'dark_red'},
-  {id:'theme_blue',name:'Ocean Blue',desc:'Cool blue chat bubbles',price:150,icon:'💙',type:'theme',val:'blue'},
-  {id:'theme_green',name:'Forest',desc:'Green chat bubbles',price:150,icon:'💚',type:'theme',val:'green'},
+  // ── Themes ──
+  {id:'theme_dark_red',name:'Dark Red',desc:'Red chat bubbles',price:150,icon:'❤️',type:'theme',val:'dark_red'},
+  {id:'theme_blue',name:'Ocean Blue',desc:'Blue chat bubbles',price:150,icon:'💙',type:'theme',val:'blue'},
+  {id:'theme_green',name:'Forest Green',desc:'Green chat bubbles',price:150,icon:'💚',type:'theme',val:'green'},
   {id:'theme_amber',name:'Amber',desc:'Warm amber bubbles',price:200,icon:'🧡',type:'theme',val:'amber'},
-  {id:'theme_white',name:'White Mode',desc:'Light mode chat',price:300,icon:'🤍',type:'theme',val:'white'},
-  {id:'skip_tok',name:'Skip Token',desc:'Skip an opponent\'s turn',price:120,icon:'⏭️',type:'consumable',val:'skip'},
-  {id:'double_xp',name:'2× XP Boost',desc:'Double XP next game',price:250,icon:'⚡',type:'consumable',val:'2xp'},
-  {id:'hint_tok',name:'Hint Token',desc:'Hint letter as imposter',price:200,icon:'💡',type:'consumable',val:'hint'},
+  {id:'theme_white',name:'White Mode',desc:'Light mode',price:300,icon:'🤍',type:'theme',val:'white'},
+  {id:'theme_purple',name:'Purple',desc:'Purple chat bubbles',price:250,icon:'💜',type:'theme',val:'purple'},
+  // ── Consumables ──
+  {id:'hint_tok',name:'Hint Token',desc:'Reveal 2 letters of the mystery word (use in shop)',price:200,icon:'💡',type:'consumable',val:'hint'},
+  {id:'skip_tok',name:'Skip Token',desc:'Skip current round in local play',price:120,icon:'⏭️',type:'consumable',val:'skip'},
+  {id:'double_xp',name:'2× XP',desc:'Double XP earned in your next game',price:250,icon:'⚡',type:'consumable',val:'2xp'},
+  {id:'double_coins',name:'2× Coins',desc:'Double coins earned in your next game',price:300,icon:'💰',type:'consumable',val:'2coins'},
+  {id:'extra_round',name:'Extra Round',desc:'+1 round in local play (use on verdict screen)',price:100,icon:'⏱️',type:'consumable',val:'extra_round'},
+  {id:'lucky_guess',name:'Lucky Guess',desc:'Remove 2 wrong options on the guess screen',price:350,icon:'🍀',type:'consumable',val:'lucky'},
+  {id:'bomb',name:'Skip Bomb',desc:'Force any player to skip their turn (local)',price:180,icon:'💣',type:'consumable',val:'bomb'},
+  {id:'mystery_box',name:'Mystery Box',desc:'Random reward: coins, XP, or a rare item!',price:80,icon:'📦',type:'consumable',val:'mystery'},
 ];
 
 // ════════════════════════════════════════
@@ -1903,7 +1919,8 @@ let G = {
   uid: null, email: '', username: 'Player', avatar: '😎',
   coins: 0, xp: 0, level: 1, gamesPlayed: 0,
   prefs: { sound: true, vibration: true },
-  inv: [], theme: 'default',
+  inv: [], theme: 'default', itemCounts: {},
+  xpBoostActive: false, coinsBoostActive: false,
   // offline
   oCategory: null, oWord: null, oPlayers: [], oImpIdx: null,
   oCurReveal: 0, oRound: 0, oMaxRounds: 5,
@@ -1912,7 +1929,7 @@ let G = {
   lobbyCode: null, lobbyRef: null, isHost: false,
   lobbyCategory: 'animals', myRole: null, myWord: null,
   onlinePlayers: [], myOnlineVote: null,
-  timerInt: null,
+  timerInt: null, onlineStatus: null,
 };
 
 // ════════════════════════════════════════
@@ -2033,6 +2050,7 @@ async function loadUser(uid) {
     G.prefs = d.prefs || { sound:true, vibration:true };
     G.inv = d.inv || [];
     G.theme = d.theme || 'default';
+    G.itemCounts = d.itemCounts || {};
   }
   updateUI();
   go('s-main');
@@ -2052,6 +2070,7 @@ async function saveUser() {
     prefs: G.prefs,
     inv: G.inv,
     theme: G.theme,
+    itemCounts: G.itemCounts,
     lastSeen: Date.now()
   });
 }
@@ -2104,6 +2123,8 @@ function updateUI() {
 }
 
 async function addRewards(coins, xp) {
+  if(G.coinsBoostActive){coins*=2;G.coinsBoostActive=false;toast('💰 2× Coins boost applied!','ok');}
+  if(G.xpBoostActive){xp*=2;G.xpBoostActive=false;toast('⚡ 2× XP boost applied!','ok');}
   G.coins += coins;
   G.xp += xp;
   G.level = lvlFromXp(G.xp);
@@ -2268,6 +2289,12 @@ function nextRound() {
   if(!G.oRoundTarget) { toast('Pick who to question first','err'); return; }
   if(G.oRound >= G.oMaxRounds) {
     $('v-rounds').textContent = G.oMaxRounds;
+    // Show extra round button if player has tokens
+    const erWrap=$('extra-round-wrap');
+    const erCount=$('extra-round-count');
+    const erQty=G.itemCounts['extra_round']||0;
+    if(erWrap) erWrap.style.display=erQty>0?'':'none';
+    if(erCount) erCount.textContent=erQty;
     go('s-verdict');
   } else {
     advRound();
@@ -2362,7 +2389,17 @@ function showGuess() {
   $('imp-cat').textContent = CAT_NAMES[G.oCategory];
   G.oGuessSelected = null;
   const btn = $('submit-guess-btn');
-  if(btn) btn.disabled = true;
+  if(btn){btn.disabled=true;btn.onclick=()=>submitGuess();btn.style.display='';}
+  const giveUpBtn=document.querySelector('#s-guess .btn-ghost');
+  if(giveUpBtn){giveUpBtn.style.display='';giveUpBtn.onclick=()=>giveUp();}
+  // Lucky Guess token button
+  const lgWrap=$('lucky-guess-wrap');
+  const lgBtn=$('lucky-guess-btn');
+  const lgCount=$('lucky-count');
+  const qty=G.itemCounts['lucky_guess']||0;
+  if(lgWrap) lgWrap.style.display=qty>0?'':'none';
+  if(lgBtn) lgBtn.disabled=false;
+  if(lgCount) lgCount.textContent=qty;
 
   // Build 8 choices: correct word + 7 random decoys from same category
   const pool = WORDS[G.oCategory].filter(w => w !== G.oWord);
@@ -2817,6 +2854,9 @@ function beginOnlineChat(d){
     });
     G.onlinePlayers=Object.values(ld.players||{});
 
+    // Skip turn UI when in a terminal state (handled by the status listener)
+    if(G.onlineStatus&&G.onlineStatus!=='playing') return;
+
     const ord=ld.turnOrder||[];
     const idx=ld.currentTurnIdx||0;
     const phase=ld.phase||'asking';
@@ -2851,14 +2891,18 @@ function beginOnlineChat(d){
     if($('chat-round-lbl')) $('chat-round-lbl').textContent=`Round ${(ld.round||0)+1} of ${ld.maxRounds||5}`;
     const timerSecs=phase==='asking'?45:30;
     startTimer(timerSecs,ld.turnStartedAt||Date.now());
-    if(ld.status==='roundsComplete'){
-      clearInterval(G.timerInt);
-      showRoundsModal(ld);
-      return;
-    }
-    if(ld.status==='voting') { closeRoundsModal(); openVoteModal(); return; }
-    if(ld.status==='ended') { closeRoundsModal(); closeVoteModal(); goOnlineSpinner(ld); return; }
-    if(ld.status==='result') { closeRoundsModal(); closeVoteModal(); showOnlineResultFromFirebase(ld); return; }
+  });
+  // ── Status-change listener (fires once per status) ──────────
+  G.lobbyRef.on('value',snap=>{
+    if(!snap.exists()) return;
+    const ld=snap.val();
+    const newStatus=ld.status||'playing';
+    if(newStatus===G.onlineStatus) return; // no change — ignore
+    G.onlineStatus=newStatus;
+    if(newStatus==='roundsComplete'){clearInterval(G.timerInt);closeAllModals();showRoundsModal(ld);return;}
+    if(newStatus==='voting'){clearInterval(G.timerInt);closeAllModals();openVoteModal();return;}
+    if(newStatus==='ended'){clearInterval(G.timerInt);closeAllModals();goOnlineSpinner(ld);return;}
+    if(newStatus==='result'){clearInterval(G.timerInt);closeAllModals();showOnlineResultFromFirebase(ld);return;}
   });
   // Listen messages
   db.ref('lobbies/'+G.lobbyCode+'/messages').on('child_added',snap=>{
@@ -3027,31 +3071,35 @@ async function submitOnlineVote(){
 }
 
 function goOnlineSpinner(ld){
-  if($('s-spinner').classList.contains('active')) return; // already there
   const imp=G.onlinePlayers.find(p=>p.uid===ld.impUid)||{};
   G.oVoteResult={impName:imp.username||'?',impUid:ld.impUid,votedOut:ld.votedOut};
   G.oWord=ld.word; G.oCategory=G.lobbyCategory||ld.category||'animals';
   go('s-spinner');
-  $('spin-result').innerHTML=`<button class="btn btn-primary" style="max-width:260px" onclick="doOnlineSpin()">🌀 &nbsp;Spin!</button>`;
-  $('spin-wheel').classList.remove('spinning');
-}
-
-function doOnlineSpin(){
-  const w=$('spin-wheel');
-  w.classList.add('spinning');
   $('spin-result').innerHTML='';
+  const w=$('spin-wheel');
+  w.classList.remove('spinning');
+  // Auto-spin after 1 second
   setTimeout(()=>{
-    const impName=G.oVoteResult.impName;
-    $('spin-result').innerHTML=`
-      <div class="big-name">${esc(impName)}</div>
-      <div class="text-sm" style="margin-top:6px">is the IMPOSTER! 🕵️</div>
-      <div class="gap16"></div>
-      <button class="btn btn-danger" style="max-width:260px" onclick="goOnlineGuess()">
-        ${G.uid===G.oVoteResult.impUid?'🤔 Guess the word!':'See the guess →'}
-      </button>
-    `;
-    vib(200);
-  },3200);
+    w.classList.add('spinning');
+    // After spin finishes, reveal impostor
+    setTimeout(()=>{
+      const impName=G.oVoteResult.impName;
+      const isImp=G.uid===G.oVoteResult.impUid;
+      $('spin-result').innerHTML=`
+        <div class="big-name">${esc(impName)}</div>
+        <div class="text-sm" style="margin-top:6px;margin-bottom:16px">is the IMPOSTER! 🕵️</div>
+        <div class="text-xs" style="color:var(--text3)" id="spin-sub">
+          ${isImp?'Get ready to guess the word...':'Waiting for '+esc(impName)+' to guess...'}
+        </div>
+      `;
+      vib(200);
+      // Auto-navigate based on role
+      if(isImp){
+        setTimeout(()=>goOnlineGuess(),2000);
+      }
+      // Non-impostors stay on spinner; Firebase status:'result' listener will redirect them
+    },3200);
+  },800);
 }
 
 function goOnlineGuess(){
@@ -3067,6 +3115,14 @@ function goOnlineGuess(){
   if(isImp){
     if(btn){btn.disabled=true;btn.style.display='';btn.textContent='Confirm Answer';btn.onclick=()=>submitOnlineGuess();}
     if(giveUpBtn){giveUpBtn.style.display='';giveUpBtn.textContent='I have no idea';giveUpBtn.onclick=()=>submitOnlineGuess(true);}
+    // Lucky Guess button
+    const lgWrap=$('lucky-guess-wrap');
+    const lgBtn=$('lucky-guess-btn');
+    const lgCount=$('lucky-count');
+    const lqty=G.itemCounts['lucky_guess']||0;
+    if(lgWrap) lgWrap.style.display=lqty>0?'':'none';
+    if(lgBtn) lgBtn.disabled=false;
+    if(lgCount) lgCount.textContent=lqty;
     const pool=WORDS[G.oCategory].filter(w=>w!==G.oWord);
     const decoys=shuffle(pool).slice(0,7);
     G.oGuessOptions=shuffle([G.oWord,...decoys]);
@@ -3205,7 +3261,14 @@ async function leaveLobby(){
   go('s-main');
 }
 
+function closeAllModals(){
+  closeVoteModal();
+  closeRoundsModal();
+  closeModal();
+}
+
 function _resetOnline(){
+  G.onlineStatus=null;
   if(G.lobbyRef){ G.lobbyRef.off(); G.lobbyRef=null; }
   clearInterval(G.timerInt);
   chatStarted=false;
@@ -3227,26 +3290,37 @@ function renderShop(){
   const grid=$('shop-items');
   grid.innerHTML='';
   SHOP.forEach(item=>{
-    const owned=G.inv.includes(item.id);
-    const equipped=G.theme===item.val&&item.type==='theme';
+    const isTheme=item.type==='theme';
+    const owned=isTheme?G.inv.includes(item.id):false;
+    const qty=isTheme?0:(G.itemCounts[item.id]||0);
+    const equipped=G.theme===item.val&&isTheme;
     const el=document.createElement('div');
-    el.className='shop-item'+(owned?' owned':'')+(equipped?' equipped':'');
+    el.className='shop-item'+(equipped?' equipped':owned?' owned':'');
     el.innerHTML=`
-      ${equipped?'<span class="item-flag flag-eq">Equipped</span>':owned?'<span class="item-flag flag-owned">Owned</span>':''}
+      ${equipped?'<span class="item-flag flag-eq">Equipped</span>':owned?'<span class="item-flag flag-owned">Owned</span>':qty>0?`<span class="item-flag flag-owned">×${qty}</span>`:''}
       <span class="si-icon">${item.icon}</span>
       <div class="si-name">${item.name}</div>
       <div class="si-desc">${item.desc}</div>
-      ${!owned?`<div class="si-price">🪙 ${item.price}</div>`:''}
+      <div class="si-price">🪙 ${item.price}</div>
     `;
     if(!owned){
       el.onclick=()=>buyItem(item);
-    } else if(item.type==='theme'&&!equipped){
+    }
+    if(isTheme&&owned&&!equipped){
       const eq=document.createElement('button');
       eq.className='btn btn-outline btn-xs';
-      eq.style.cssText='margin-top:8px;width:100%';
+      eq.style.cssText='margin-top:8px;width:100%;font-size:0.78rem';
       eq.textContent='Equip';
       eq.onclick=e=>{e.stopPropagation();equipTheme(item.val);};
       el.appendChild(eq);
+    }
+    if(!isTheme&&qty>0){
+      const ub=document.createElement('button');
+      ub.className='btn btn-outline btn-xs';
+      ub.style.cssText='margin-top:6px;width:100%;font-size:0.78rem';
+      ub.textContent='▶ Use';
+      ub.onclick=e=>{e.stopPropagation();useItem(item);};
+      el.appendChild(ub);
     }
     grid.appendChild(el);
   });
@@ -3254,18 +3328,144 @@ function renderShop(){
 
 function buyItem(item){
   if(G.coins<item.price){toast('Not enough coins','err');return;}
-  showModal('Buy '+item.name,`Cost ${item.price} coins. You have ${G.coins}.`,[
+  showModal('Buy '+item.name,`Cost: 🪙${item.price}. You have: 🪙${G.coins}.`,[
     {label:'Cancel'},
     {label:'Buy '+item.icon,cls:'btn-amber',fn:async()=>{
       G.coins-=item.price;
-      G.inv.push(item.id);
-      if(item.type==='theme') G.theme=item.val;
+      if(item.type==='theme'){
+        if(!G.inv.includes(item.id)) G.inv.push(item.id);
+        G.theme=item.val;
+        applyTheme();
+      } else {
+        G.itemCounts[item.id]=(G.itemCounts[item.id]||0)+1;
+      }
       await saveUser();
       renderShop();
       updateUI();
       toast('Purchased! '+item.icon,'ok');
     }}
   ]);
+}
+
+function useItem(item){
+  switch(item.val){
+    case 'hint': useHintToken(); break;
+    case 'skip': useSkipToken(); break;
+    case 'extra_round': useExtraRound(); break;
+    case 'lucky': useLuckyGuess(); break;
+    case 'bomb': useBomb(); break;
+    case 'mystery': useMysteryBox(); break;
+    case '2xp':
+      if(!(G.itemCounts['double_xp']||0)){toast('No 2× XP tokens!','err');return;}
+      G.itemCounts['double_xp']--;
+      G.xpBoostActive=true;
+      saveUser();
+      renderShop();
+      toast('⚡ 2× XP active for your next game!','ok');
+      break;
+    case '2coins':
+      if(!(G.itemCounts['double_coins']||0)){toast('No 2× Coins tokens!','err');return;}
+      G.itemCounts['double_coins']--;
+      G.coinsBoostActive=true;
+      saveUser();
+      renderShop();
+      toast('💰 2× Coins active for your next game!','ok');
+      break;
+    default: toast('Use this during a game!','info');
+  }
+}
+
+function useHintToken(){
+  if(!(G.itemCounts['hint_tok']||0)){toast('No hint tokens!','err');return;}
+  const word=G.oWord;
+  if(!word||word==='???'){toast('Start an offline game as the impostor first!','err');return;}
+  G.itemCounts['hint_tok']--;
+  saveUser();
+  renderShop();
+  const hint=word.slice(0,2)+'*'.repeat(Math.max(0,word.length-2));
+  toast(`💡 Word hint: "${hint}"  (${word.length} letters)`,'ok');
+}
+
+function useSkipToken(){
+  if(!(G.itemCounts['skip_tok']||0)){toast('No skip tokens!','err');return;}
+  if(!G.oPlayers||!G.oPlayers.length){toast('Use during a local game!','err');return;}
+  G.itemCounts['skip_tok']--;
+  saveUser();
+  toast('⏭️ Round skipped!','ok');
+  advRound();
+}
+
+function useExtraRound(){
+  if(!(G.itemCounts['extra_round']||0)){toast('No extra round tokens!','err');return;}
+  if(!G.oPlayers||!G.oPlayers.length){toast('Use during a local game!','err');return;}
+  G.itemCounts['extra_round']--;
+  G.oMaxRounds++;
+  saveUser();
+  toast('⏱️ +1 extra round added!','ok');
+  advRound();
+}
+
+function useLuckyGuess(){
+  if(!(G.itemCounts['lucky_guess']||0)){toast('No lucky guess tokens!','err');return;}
+  const opts=document.querySelectorAll('.guess-opt');
+  if(!opts.length){toast('Use this on the guess screen!','err');return;}
+  G.itemCounts['lucky_guess']--;
+  saveUser();
+  let removed=0;
+  opts.forEach(el=>{
+    if(removed>=2) return;
+    const w=el.querySelector('.go-word');
+    if(!w) return;
+    const word=w.textContent;
+    if(word!==G.oWord&&!el.classList.contains('selected')){
+      el.style.opacity='0.3';
+      el.style.pointerEvents='none';
+      w.innerHTML='<s>'+esc(word)+'</s>';
+      removed++;
+    }
+  });
+  const lb=$('lucky-guess-btn');
+  if(lb) lb.disabled=true;
+  renderShop();
+  toast('🍀 2 wrong answers eliminated!','ok');
+}
+
+function useBomb(){
+  if(!(G.itemCounts['bomb']||0)){toast('No bombs!','err');return;}
+  if(!G.oPlayers||!G.oPlayers.length){toast('Use during a local game!','err');return;}
+  const choices=G.oPlayers.map((p,i)=>({
+    label:p,
+    fn:()=>{
+      G.itemCounts['bomb']--;
+      saveUser();
+      toast(`💣 ${p}'s turn was skipped!`,'ok');
+      advRound();
+    }
+  }));
+  choices.unshift({label:'Cancel'});
+  showModal('💣 Skip Bomb','Which player to skip?',choices);
+}
+
+function useMysteryBox(){
+  if(!(G.itemCounts['mystery_box']||0)){toast('No mystery boxes!','err');return;}
+  G.itemCounts['mystery_box']--;
+  const rewards=[
+    {coins:50,xp:0,msg:'📦 +50 coins!'},
+    {coins:100,xp:0,msg:'📦 Jackpot! +100 coins!'},
+    {coins:0,xp:30,msg:'📦 +30 XP!'},
+    {coins:20,xp:10,msg:'📦 +20 coins & +10 XP!'},
+    {coins:0,xp:0,item:'hint_tok',msg:'📦 Got a Hint Token! 💡'},
+    {coins:0,xp:0,item:'extra_round',msg:'📦 Got an Extra Round! ⏱️'},
+    {coins:0,xp:0,item:'lucky_guess',msg:'📦 Got a Lucky Guess! 🍀'},
+  ];
+  const r=rand(rewards);
+  if(r.coins) G.coins+=r.coins;
+  if(r.xp){G.xp+=r.xp;G.level=lvlFromXp(G.xp);}
+  if(r.item) G.itemCounts[r.item]=(G.itemCounts[r.item]||0)+1;
+  saveUser();
+  updateUI();
+  renderShop();
+  toast(r.msg,'ok');
 }
 
 async function equipTheme(val){
@@ -3283,6 +3483,7 @@ function applyTheme(){
     green:{mine:'var(--green)'},
     amber:{mine:'var(--amber)'},
     white:{mine:'#222',text:'#000'},
+    purple:{mine:'#7c3aed'},
   };
   const t=themes[G.theme]||{mine:'var(--red)'};
   document.documentElement.style.setProperty('--chat-mine-bg',t.mine||'var(--red)');
