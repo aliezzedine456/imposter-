@@ -663,6 +663,36 @@ body {
 .send-btn:active { background: #c62828; transform: scale(0.93); }
 .send-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
 
+/* ── CHAT ITEMS PANEL ── */
+.chat-plus-btn {
+  width: 44px; height: 44px; border-radius: 50%;
+  background: var(--bg3); border: 1.5px solid var(--border2);
+  color: var(--text2); font-size: 1.5rem; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; cursor: pointer; transition: all 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.chat-plus-btn:active { transform: scale(0.9); }
+.chat-plus-btn.open { background: var(--red-dim); border-color: var(--red); color: var(--red2); transform: rotate(45deg); }
+.chat-items-panel {
+  background: var(--bg2); border-top: 1px solid var(--border);
+  padding: 10px 12px; max-height: 52vh; overflow-y: auto;
+  flex-shrink: 0; animation: slideUp 0.18s ease;
+}
+.chat-item-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; background: var(--bg3);
+  border-radius: var(--radius-sm); border: 1px solid var(--border);
+  margin-bottom: 7px;
+}
+.chat-item-row:last-child { margin-bottom: 0; }
+.chat-item-icon { font-size: 1.5rem; flex-shrink: 0; }
+.chat-item-info { flex: 1; min-width: 0; }
+.chat-item-name { font-size: 0.85rem; font-weight: 700; }
+.chat-item-desc { font-size: 0.72rem; color: var(--text2); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-item-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.chat-item-qty { font-size: 0.72rem; font-weight: 700; background: var(--bg); padding: 2px 8px; border-radius: 99px; border: 1px solid var(--border2); color: var(--text2); }
+
 /* ── SHOP (redesigned) ── */
 .shop-tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
 .shop-tabs::-webkit-scrollbar { display: none; }
@@ -1138,7 +1168,14 @@ body {
 
     <div id="typing-indicator" style="min-height:22px;padding:2px 16px 4px;font-size:0.78rem;color:var(--text3);font-style:italic;display:flex;align-items:center;gap:6px"></div>
 
+    <div id="chat-items-panel" style="display:none" class="chat-items-panel">
+      <div style="font-size:0.72rem;font-weight:700;color:var(--text2);margin-bottom:8px;letter-spacing:0.04em">🎒 YOUR ITEMS</div>
+      <div id="chat-items-list"></div>
+      <div id="chat-items-empty" style="display:none;font-size:0.82rem;color:var(--text3);text-align:center;padding:14px 0">No online items yet — buy some in the Shop!</div>
+    </div>
+
     <div class="chat-input-wrap">
+      <button class="chat-plus-btn" id="chat-plus-btn" onclick="toggleChatItemPanel()" title="Use an item">+</button>
       <input class="chat-field" id="chat-in" placeholder="Send a message..." disabled oninput="onChatInput()">
       <button class="send-btn" id="send-btn" onclick="sendMsg()" disabled>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
@@ -2881,6 +2918,64 @@ async function advOnlineTurn(){
   await db.ref('lobbies/'+G.lobbyCode).update({currentTurnIdx:idx,round,phase:'asking',turnStartedAt:Date.now()});
 }
 
+// ── Chat Item Quick-Use Panel ──────────────────────────────
+function toggleChatItemPanel(){
+  const panel=$('chat-items-panel');
+  const btn=$('chat-plus-btn');
+  if(!panel) return;
+  const open=panel.style.display==='none'||panel.style.display==='';
+  panel.style.display=open?'block':'none';
+  if(btn) btn.classList.toggle('open',open);
+  if(open) renderChatItemPanel();
+}
+
+function renderChatItemPanel(){
+  const list=$('chat-items-list');
+  const empty=$('chat-items-empty');
+  if(!list) return;
+  const onlineItems=SHOP.filter(s=>s.type==='online'&&!s.hidden);
+  const owned=onlineItems.filter(s=>(G.itemCounts[s.id]||0)>0);
+  if(!owned.length){
+    list.innerHTML='';
+    if(empty) empty.style.display='block';
+    return;
+  }
+  if(empty) empty.style.display='none';
+  list.innerHTML='';
+  owned.forEach(item=>{
+    const qty=G.itemCounts[item.id]||0;
+    const row=document.createElement('div');
+    row.className='chat-item-row';
+    row.innerHTML=`
+      <div class="chat-item-icon">${item.icon}</div>
+      <div class="chat-item-info">
+        <div class="chat-item-name">${item.name}</div>
+        <div class="chat-item-desc">${item.desc}</div>
+      </div>
+      <div class="chat-item-meta">
+        <span class="chat-item-qty">×${qty}</span>
+        <button class="btn btn-primary btn-xs" style="height:32px;padding:0 12px;font-size:0.78rem" onclick="useChatItem('${item.id}')">Use</button>
+      </div>
+    `;
+    list.appendChild(row);
+  });
+}
+
+function useChatItem(itemId){
+  const item=SHOP.find(s=>s.id===itemId);
+  if(!item) return;
+  // Close panel
+  const panel=$('chat-items-panel');
+  const btn=$('chat-plus-btn');
+  if(panel) panel.style.display='none';
+  if(btn) btn.classList.remove('open');
+  // Use the item
+  useItem(item);
+  // Refresh panel data for next open
+  setTimeout(renderChatItemPanel,150);
+}
+// ── End Chat Item Panel ────────────────────────────────────
+
 async function sendMsg(){
   const ci=$('chat-in'),sb=$('send-btn');
   const txt=ci.value.trim(); if(!txt) return;
@@ -2980,10 +3075,21 @@ function showRoundsModal(ld){
   if(body) body.textContent=`${rounds} rounds done — what's next?`;
   const btns=$('rounds-modal-btns'); if(!btns) return;
   if(G.isHost){
-    btns.innerHTML=`
-      <button class="btn btn-primary" onclick="continueOnlineRounds()">➕ 5 More Rounds</button>
-      <button class="btn btn-danger" onclick="callOnlineVote()">🗳️ Vote Now!</button>
-    `;
+    // 5-second countdown so host can review the last answer before deciding
+    let secs=5;
+    btns.innerHTML=`<div style="text-align:center;padding:8px 0"><div style="font-size:2rem;line-height:1;font-weight:900" id="rm-countdown">${secs}</div><div style="font-size:0.78rem;color:var(--text2);margin-top:4px">Review the last answer…</div></div>`;
+    const cd=setInterval(()=>{
+      secs--;
+      const el=$('rm-countdown');
+      if(el) el.textContent=secs;
+      if(secs<=0){
+        clearInterval(cd);
+        if(btns) btns.innerHTML=`
+          <button class="btn btn-primary" onclick="continueOnlineRounds()">➕ 5 More Rounds</button>
+          <button class="btn btn-danger" onclick="callOnlineVote()">🗳️ Vote Now!</button>
+        `;
+      }
+    },1000);
   } else {
     btns.innerHTML=`<div class="text-xs" style="color:var(--text3);padding:10px 0">Waiting for host to decide...</div>`;
   }
