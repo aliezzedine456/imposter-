@@ -1363,8 +1363,9 @@ body {
 <div class="screen" id="s-on-reveal">
   <div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;width:100%;max-width:440px;margin:0 auto">
     <div style="text-align:center;margin-bottom:24px">
-      <div class="text-sm" style="margin-bottom:6px">Your role for</div>
+      <div class="text-sm" style="margin-bottom:6px">📱 Pass phone to</div>
       <div style="font-size:1.6rem;font-weight:800" id="on-reveal-name">---</div>
+      <div class="text-xs" style="margin-top:6px;color:var(--text3)">Let them see their role, then pass back</div>
     </div>
 
     <div class="flip-card" id="on-flip-card" onclick="flipOnlineCard()">
@@ -1406,9 +1407,13 @@ body {
     </div>
 
     <div class="turn-bar">
-      <div>
-        <div class="turn-label">Asking now</div>
-        <div class="turn-name" id="turn-who">---</div>
+      <div style="flex:1;min-width:0">
+        <div class="turn-label" id="turn-phase-lbl">Asking now</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:3px;flex-wrap:wrap">
+          <div class="turn-name" id="turn-who" style="color:var(--red2)">---</div>
+          <div style="color:var(--text3);font-size:0.82rem;font-weight:700">asks</div>
+          <div class="turn-name" id="turn-answerer" style="color:var(--blue2)">---</div>
+        </div>
       </div>
       <div class="timer-ring">
         <svg width="44" height="44" viewBox="0 0 44 44">
@@ -2643,7 +2648,7 @@ async function startOnlineGame(){
   await db.ref('lobbies/'+G.lobbyCode).update({
     status:'revealing',word,impUid,roles,readyPlayers:{},
     turnOrder:shuffle(uids),currentTurnIdx:0,round:0,maxRounds:5,
-    votes:{},turnStartedAt:Date.now()
+    votes:{},turnStartedAt:Date.now(),phase:'asking'
   });
 }
 
@@ -2724,16 +2729,38 @@ function beginOnlineChat(d){
 
     const ord=ld.turnOrder||[];
     const idx=ld.currentTurnIdx||0;
+    const phase=ld.phase||'asking';
     const askerUid=ord[idx];
-    // Asker might have left — find next valid asker
+    const answererIdx=(idx+1)%Math.max(ord.length,1);
+    const answererUid=ord[answererIdx];
+    // Find players (may have left)
     const asker=G.onlinePlayers.find(p=>p.uid===askerUid)||G.onlinePlayers[0]||{username:'?'};
+    const answerer=G.onlinePlayers.find(p=>p.uid===answererUid)||G.onlinePlayers[0]||{username:'?'};
+    // Update turn bar
+    if($('turn-phase-lbl')) $('turn-phase-lbl').textContent=phase==='asking'?'Asking now ⏱ 45s':'Answering now ⏱ 30s';
     if($('turn-who')) $('turn-who').textContent=asker.username;
-    const isMe=askerUid===G.uid;
+    if($('turn-answerer')) $('turn-answerer').textContent=answerer.username;
+    // Timer stroke color: red for asking, blue for answering
+    const tp=$('t-circle');
+    if(tp) tp.style.stroke=phase==='asking'?'var(--red)':'var(--blue2)';
+    // Enable input for the right person
+    const isAsker=askerUid===G.uid;
+    const isAnswerer=answererUid===G.uid;
+    const myTurn=phase==='asking'?isAsker:isAnswerer;
+    const activePerson=phase==='asking'?asker:answerer;
     const ci=$('chat-in'),sb=$('send-btn');
-    if(ci){ci.disabled=!isMe;ci.placeholder=isMe?'Your turn to ask...':`Waiting for ${asker.username}...`;}
-    if(sb) sb.disabled=!isMe;
+    if(ci){
+      ci.disabled=!myTurn;
+      if(myTurn){
+        ci.placeholder=phase==='asking'?'Ask your question...':'Answer the question...';
+      } else {
+        ci.placeholder=`Waiting for ${activePerson.username}...`;
+      }
+    }
+    if(sb) sb.disabled=!myTurn;
     if($('chat-round-lbl')) $('chat-round-lbl').textContent=`Round ${(ld.round||0)+1} of ${ld.maxRounds||5}`;
-    startTimer(45,ld.turnStartedAt||Date.now(),isMe);
+    const timerSecs=phase==='asking'?45:30;
+    startTimer(timerSecs,ld.turnStartedAt||Date.now());
     if(ld.status==='voting'||ld.status==='ended') openVoteModal();
   });
   // Listen messages
@@ -2742,7 +2769,7 @@ function beginOnlineChat(d){
   });
 }
 
-function startTimer(secs,startedAt,isMe){
+function startTimer(secs,startedAt){
   clearInterval(G.timerInt);
   const circ=$('t-circle'),num=$('t-num');
   const circ_len=113.1;
@@ -2762,6 +2789,13 @@ async function advOnlineTurn(){
   const snap=await db.ref('lobbies/'+G.lobbyCode).once('value');
   const d=snap.val();
   const ord=d.turnOrder||[];
+  const phase=d.phase||'asking';
+  if(phase==='asking'){
+    // Asker sent their question → switch to answering (30s)
+    await db.ref('lobbies/'+G.lobbyCode).update({phase:'answering',turnStartedAt:Date.now()});
+    return;
+  }
+  // Answering phase done → move to next asker, back to asking (45s)
   let idx=(d.currentTurnIdx||0)+1;
   let round=d.round||0;
   if(idx>=ord.length){idx=0;round++;}
@@ -2769,7 +2803,7 @@ async function advOnlineTurn(){
     await db.ref('lobbies/'+G.lobbyCode).update({status:'voting'});
     return;
   }
-  await db.ref('lobbies/'+G.lobbyCode).update({currentTurnIdx:idx,round,turnStartedAt:Date.now()});
+  await db.ref('lobbies/'+G.lobbyCode).update({currentTurnIdx:idx,round,phase:'asking',turnStartedAt:Date.now()});
 }
 
 async function sendMsg(){
