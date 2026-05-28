@@ -2428,11 +2428,15 @@ async function createLobby(){
   G.lobbyCode=code;
   G.isHost=true;
   G.lobbyCategory='animals';
+  const playerRef=db.ref('lobbies/'+code+'/players/'+G.uid);
   await db.ref('lobbies/'+code).set({
     host:G.uid,code,status:'waiting',category:'animals',
     createdAt:Date.now(),
     players:{[G.uid]:{uid:G.uid,username:G.username,avatar:G.avatar,ready:false,joined:Date.now()}}
   });
+  // Auto-remove player on disconnect
+  playerRef.onDisconnect().remove();
+  db.ref('lobbies/'+code).onDisconnect().remove(); // will only fire if host is last
   $('lobby-code').textContent=code;
   renderLobbyCategory('animals');
   go('s-lobby');
@@ -2469,16 +2473,16 @@ async function createRandomLobby(){
   if(!G.uid){toast('Log in first','err');return;}
   const code=genCode();
   G.lobbyCode=code;
-  G.isHost=false; // creator of a random lobby is NOT the host
+  G.isHost=false;
   G.lobbyCategory='animals';
   await db.ref('lobbies/'+code).set({
     host:null, code, status:'waiting', category:'animals',
     createdAt:Date.now(), randomLobby:true,
     players:{[G.uid]:{uid:G.uid,username:G.username,avatar:G.avatar,ready:false,joined:Date.now()}}
   });
+  db.ref('lobbies/'+code+'/players/'+G.uid).onDisconnect().remove();
   $('lobby-code').textContent=code;
   renderLobbyCategory('animals');
-  $('lobby-action').innerHTML=`<div class="card card-sm text-center" style="background:var(--bg2)"><div class="text-sm">Waiting for someone to join and host...</div></div>`;
   go('s-lobby');
   listenLobby(code);
 }
@@ -2488,20 +2492,17 @@ async function joinLobby(code){
   if(!snap.exists()){toast('Lobby not found','err');return;}
   const d=snap.val();
   if(d.status!=='waiting'){toast('Game already started','err');return;}
-  if(Object.keys(d.players||{}).length>=4){toast('Lobby is full','err');return;}
+  if(Object.keys(d.players||{}).length>=8){toast('Lobby is full','err');return;}
   if((d.players||{})[G.uid]){toast('Already in this lobby','err');return;}
   G.lobbyCode=code;
-  // If lobby has no host yet, this joiner becomes the host
-  const becomeHost = !d.host;
-  G.isHost = becomeHost;
-  const updates = {['players/'+G.uid]:{uid:G.uid,username:G.username,avatar:G.avatar,ready:false,joined:Date.now()}};
-  if(becomeHost) updates.host = G.uid;
+  const becomeHost=!d.host;
+  G.isHost=becomeHost;
+  const updates={['players/'+G.uid]:{uid:G.uid,username:G.username,avatar:G.avatar,ready:false,joined:Date.now()}};
+  if(becomeHost) updates.host=G.uid;
   await db.ref('lobbies/'+code).update(updates);
+  db.ref('lobbies/'+code+'/players/'+G.uid).onDisconnect().remove();
   $('lobby-code').textContent=code;
   renderLobbyCategory(d.category||'animals');
-  if(!G.isHost){
-    $('lobby-action').innerHTML=`<div class="card card-sm text-center" style="background:var(--bg2)"><div class="text-sm">Waiting for host to start...</div></div>`;
-  }
   go('s-lobby');
   listenLobby(code);
 }
@@ -2510,38 +2511,106 @@ function listenLobby(code){
   if(G.lobbyRef) G.lobbyRef.off();
   G.lobbyRef=db.ref('lobbies/'+code);
   G.lobbyRef.on('value',snap=>{
-    if(!snap.exists()){toast('Lobby closed','err');leaveLobby();return;}
+    if(!snap.exists()){
+      // Lobby was deleted (e.g. last player left or host wiped it)
+      if(G.lobbyCode){
+        toast('Lobby was closed','err');
+        _resetOnline();
+        go('s-main');
+      }
+      return;
+    }
     const d=snap.val();
     const players=Object.values(d.players||{});
+    const playerUids=Object.keys(d.players||{});
     const count=players.length;
-    renderLobbySlots(players);
-    if($('lobby-count')) $('lobby-count').textContent=count+' / 4';
-    G.lobbyCategory=d.category||'animals';
-    renderLobbyCategory(G.lobbyCategory);
-    // Update start btn (host only)
-    if(G.isHost){
-      const btn=$('start-btn');
-      if(btn){
-        btn.disabled=count<4;
-        btn.textContent=count<4?`Need ${4-count} more player${4-count===1?'':'s'}...`:'🚀  Start Game!';
+
+    // ── Realtime host sync ──────────────────────────────
+    const wasHost=G.isHost;
+    G.isHost=(d.host===G.uid);
+    if(!wasHost&&G.isHost) toast('You are now the host!','ok');
+
+    // ── Host disappeared but lobby still exists → promote ──
+    if(d.host&&!playerUids.includes(d.host)&&count>0){
+      // Elect the player who joined earliest
+      const sorted=[...players].sort((a,b)=>(a.joined||0)-(b.joined||0));
+      if(sorted[0].uid===G.uid){
+        db.ref('lobbies/'+code+'/host').set(G.uid);
       }
+      return; // wait for next snapshot after election
     }
+
+    // ── No host yet (random lobby) → first joiner takes it ──
+    if(!d.host&&count>0){
+      const sorted=[...players].sort((a,b)=>(a.joined||0)-(b.joined||0));
+      if(sorted[0].uid===G.uid){
+        db.ref('lobbies/'+code+'/host').set(G.uid);
+      }
+      return;
+    }
+
+    // Only update lobby UI if we're still on the lobby/waiting screen
+    if(document.getElementById('s-lobby').classList.contains('active')){
+      renderLobbySlots(players,d.host);
+      if($('lobby-count')) $('lobby-count').textContent=count+' player'+(count===1?'':'s');
+      G.lobbyCategory=d.category||'animals';
+      renderLobbyCategory(G.lobbyCategory);
+      renderLobbyAction(count,d,players);
+    }
+
     if(d.status==='revealing') beginOnlineReveal(d);
     if(d.status==='playing') beginOnlineChat(d);
   });
 }
 
-function renderLobbySlots(players){
+function renderLobbySlots(players,hostUid){
   const grid=$('lobby-slots');
   if(!grid) return;
   grid.innerHTML='';
-  for(let i=0;i<4;i++){
-    const p=players[i];
+  // Show all current players + one empty slot if room
+  const showEmpty=players.length<8;
+  players.forEach(p=>{
+    const isH=p.uid===hostUid;
     const el=document.createElement('div');
-    el.className='slot'+(p?' filled':'');
-    if(p) el.innerHTML=`<div class="slot-av">${p.avatar||p.username[0]}</div><div><div class="slot-name">${esc(p.username)}</div><div class="slot-ready">${p.ready?'✅ Ready':'Waiting...'}</div></div>`;
-    else el.innerHTML=`<div class="slot-empty"><div class="dot-anim"><span></span><span></span><span></span></div> Waiting</div>`;
+    el.className='slot filled';
+    el.innerHTML=`
+      <div class="slot-av">${p.avatar||p.username[0]}</div>
+      <div style="flex:1;min-width:0">
+        <div class="slot-name">${esc(p.username)}${isH?' <span style="font-size:0.65rem;color:var(--red2);font-weight:700;letter-spacing:0.05em">HOST</span>':''}</div>
+        <div class="slot-ready" style="font-size:0.72rem;color:var(--text3)">In lobby</div>
+      </div>
+    `;
     grid.appendChild(el);
+  });
+  if(showEmpty){
+    const el=document.createElement('div');
+    el.className='slot';
+    el.innerHTML=`<div class="slot-empty"><div class="dot-anim"><span></span><span></span><span></span></div> Waiting for players...</div>`;
+    grid.appendChild(el);
+  }
+}
+
+function renderLobbyAction(count,d,players){
+  const area=$('lobby-action');
+  if(!area) return;
+  if(G.isHost){
+    const canStart=count>=2;
+    area.innerHTML=`
+      <button class="btn btn-primary" id="start-btn" onclick="startOnlineGame()" ${canStart?'':'disabled'}>
+        ${canStart?'🚀 &nbsp;Start Game!':'Need at least 1 more player to start'}
+      </button>
+    `;
+  } else {
+    const hostPlayer=d.host?players.find(p=>p.uid===d.host):null;
+    area.innerHTML=`
+      <div class="card card-sm text-center" style="background:var(--bg2);padding:16px">
+        <div class="text-sm" style="color:var(--text2)">
+          ${hostPlayer
+            ?`Waiting for <strong style="color:var(--white)">${esc(hostPlayer.username)}</strong> to start the game...`
+            :'Waiting for a host...'}
+        </div>
+      </div>
+    `;
   }
 }
 
@@ -2562,11 +2631,11 @@ function setLobbyCategory(cat){
 }
 
 async function startOnlineGame(){
-  if(!G.isHost) return;
+  if(!G.isHost){toast('Only the host can start','err');return;}
   const snap=await db.ref('lobbies/'+G.lobbyCode).once('value');
   const d=snap.val();
   const uids=Object.keys(d.players||{});
-  if(uids.length<4){toast('Need 4 players','err');return;}
+  if(uids.length<2){toast('Need at least 2 players','err');return;}
   const word=rand(WORDS[G.lobbyCategory]);
   const impUid=rand(uids);
   const roles={};
@@ -2627,14 +2696,37 @@ function beginOnlineChat(d){
   G.onlinePlayers=Object.values(d.players||{});
   go('s-chat');
   applyTheme();
-  // Listen lobby
+  // Listen lobby for turn/status changes
   G.lobbyRef.on('value',snap=>{
-    if(!snap.exists()) return;
+    if(!snap.exists()){
+      toast('Lobby closed','err');
+      _resetOnline();
+      go('s-main');
+      return;
+    }
     const ld=snap.val();
+
+    // Sync host in case it transferred during game
+    const wasHost=G.isHost;
+    G.isHost=(ld.host===G.uid);
+    if(!wasHost&&G.isHost) toast('You are now the host!','ok');
+
+    // Detect players who left mid-game
+    const currentUids=Object.keys(ld.players||{});
+    const prevUids=G.onlinePlayers.map(p=>p.uid);
+    prevUids.forEach(uid=>{
+      if(!currentUids.includes(uid)){
+        const gone=G.onlinePlayers.find(p=>p.uid===uid);
+        if(gone) appendMsg({type:'system',text:`${gone.username} disconnected.`,ft:ftime()});
+      }
+    });
+    G.onlinePlayers=Object.values(ld.players||{});
+
     const ord=ld.turnOrder||[];
     const idx=ld.currentTurnIdx||0;
     const askerUid=ord[idx];
-    const asker=G.onlinePlayers.find(p=>p.uid===askerUid)||{username:'?'};
+    // Asker might have left — find next valid asker
+    const asker=G.onlinePlayers.find(p=>p.uid===askerUid)||G.onlinePlayers[0]||{username:'?'};
     if($('turn-who')) $('turn-who').textContent=asker.username;
     const isMe=askerUid===G.uid;
     const ci=$('chat-in'),sb=$('send-btn');
@@ -2764,11 +2856,51 @@ const closeVoteModal=()=>$('vote-modal').classList.add('hidden');
 
 async function leaveLobby(){
   if(G.lobbyRef) G.lobbyRef.off();
-  if(G.lobbyCode&&G.uid) await db.ref('lobbies/'+G.lobbyCode+'/players/'+G.uid).remove();
+  clearInterval(G.timerInt);
+  if(G.lobbyCode&&G.uid){
+    try{
+      const snap=await db.ref('lobbies/'+G.lobbyCode).once('value');
+      if(snap.exists()){
+        const d=snap.val();
+        const remaining=Object.keys(d.players||{}).filter(u=>u!==G.uid);
+        // Cancel disconnect handler first
+        db.ref('lobbies/'+G.lobbyCode+'/players/'+G.uid).onDisconnect().cancel();
+        await db.ref('lobbies/'+G.lobbyCode+'/players/'+G.uid).remove();
+        if(remaining.length===0){
+          // Last one out — delete the lobby
+          await db.ref('lobbies/'+G.lobbyCode).remove();
+        } else if(G.isHost){
+          // Transfer host to the earliest joiner still in lobby
+          const others=Object.values(d.players||{}).filter(p=>p.uid!==G.uid);
+          const sorted=others.sort((a,b)=>(a.joined||0)-(b.joined||0));
+          await db.ref('lobbies/'+G.lobbyCode+'/host').set(sorted[0].uid);
+          // Notify remaining players via a system message if game was in progress
+          if(d.status==='playing'){
+            await db.ref('lobbies/'+G.lobbyCode+'/messages').push({
+              type:'system',text:`${G.username} left the game. ${sorted[0].username} is now the host.`,time:Date.now(),ft:ftime()
+            });
+          }
+        } else if(d.status==='playing'){
+          // Non-host left during game — notify others
+          await db.ref('lobbies/'+G.lobbyCode+'/messages').push({
+            type:'system',text:`${G.username} left the game.`,time:Date.now(),ft:ftime()
+          });
+        }
+      }
+    }catch(e){ /* ignore cleanup errors */ }
+  }
+  _resetOnline();
+  go('s-main');
+}
+
+function _resetOnline(){
+  if(G.lobbyRef){ G.lobbyRef.off(); G.lobbyRef=null; }
   clearInterval(G.timerInt);
   chatStarted=false;
-  G.lobbyCode=null;G.lobbyRef=null;G.isHost=false;
-  go('s-main');
+  G.lobbyCode=null;
+  G.isHost=false;
+  G.onlinePlayers=[];
+  G.myOnlineVote=null;
 }
 
 function copyCode(){
