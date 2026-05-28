@@ -1307,6 +1307,30 @@ body {
   </div>
 </div>
 
+<!-- ████ SCREEN: RANDOM BROWSE ████ -->
+<div class="screen" id="s-random">
+  <div class="page-content">
+    <div class="topbar">
+      <div class="icon-btn" onclick="stopBrowsing()">‹</div>
+      <span class="topbar-title">Play Randomly</span>
+      <div style="width:40px"></div>
+    </div>
+    <div class="card text-center" style="padding:20px;background:rgba(229,57,53,0.06);border-color:rgba(229,57,53,0.2)">
+      <div style="font-size:2rem;margin-bottom:6px">🎲</div>
+      <div style="font-weight:700;font-size:0.95rem;margin-bottom:4px">Players Online Now</div>
+      <div class="text-xs" style="color:var(--text3)">Join an open lobby or create a new one</div>
+    </div>
+    <div class="gap12"></div>
+    <div id="browse-list" class="stack">
+      <div class="loader"><div class="spin"></div><div class="text-sm" style="color:var(--text2)">Searching...</div></div>
+    </div>
+    <div class="gap16"></div>
+    <button class="btn btn-primary" onclick="createAndBrowse()">✨ &nbsp;Create New Game</button>
+    <div class="gap8"></div>
+    <button class="btn btn-ghost" onclick="stopBrowsing()">Cancel</button>
+  </div>
+</div>
+
 <!-- ████ SCREEN: LOBBY ████ -->
 <div class="screen" id="s-lobby">
   <div class="page-content">
@@ -1574,7 +1598,6 @@ body {
       </div>
       <div class="stack">
         <button class="btn btn-primary" onclick="startVoting()">🗳️ &nbsp;Vote!</button>
-        <button class="btn btn-outline" onclick="moreRounds()">➕ &nbsp;5 More Rounds</button>
         <button class="btn btn-ghost" onclick="noVoteEnd()">End game (no vote)</button>
       </div>
     </div>
@@ -1809,6 +1832,18 @@ body {
     <div class="row">
       <button class="btn btn-outline" onclick="closeVoteModal()">Cancel</button>
       <button class="btn btn-danger" onclick="submitOnlineVote()">Vote</button>
+    </div>
+  </div>
+</div>
+
+<!-- Rounds Complete Modal (online) -->
+<div class="overlay hidden" id="rounds-modal">
+  <div class="modal" style="text-align:center">
+    <div style="font-size:3rem;margin-bottom:10px">🤔</div>
+    <div class="modal-title" style="font-size:1.2rem">Rounds Complete!</div>
+    <div class="modal-body" id="rounds-modal-body">5 rounds done — what's next?</div>
+    <div class="stack" id="rounds-modal-btns">
+      <div class="text-xs" style="color:var(--text3);padding:8px 0">Waiting for host...</div>
     </div>
   </div>
 </div>
@@ -2456,22 +2491,62 @@ async function joinByCode(){
 
 async function joinRandom(){
   if(!G.uid){toast('Log in first','err');return;}
-  const snap=await db.ref('lobbies').orderByChild('status').equalTo('waiting').limitToFirst(20).once('value');
-  let found=null;
-  if(snap.exists()){
-    snap.forEach(s=>{
-      const l=s.val();
-      const count=Object.keys(l.players||{}).length;
-      if(count<4&&!((l.players||{})[G.uid])&&!found) found=s.key;
+  go('s-random');
+  browseRandom();
+}
+
+let browseRef=null;
+function browseRandom(){
+  if(browseRef) browseRef.off();
+  browseRef=db.ref('lobbies').orderByChild('status').equalTo('waiting');
+  browseRef.on('value',snap=>{
+    const list=$('browse-list');
+    if(!list) return;
+    const lobbies=[];
+    if(snap.exists()){
+      snap.forEach(s=>{
+        const l=s.val();
+        const count=Object.keys(l.players||{}).length;
+        if(count<8&&!(( l.players||{})[G.uid])) lobbies.push({key:s.key,...l,count});
+      });
+    }
+    if(!lobbies.length){
+      list.innerHTML=`
+        <div class="card card-sm text-center" style="background:var(--bg2)">
+          <div style="font-size:1.8rem;margin-bottom:6px">🔍</div>
+          <div style="font-weight:600;font-size:0.9rem;margin-bottom:4px">No games found</div>
+          <div class="text-xs" style="color:var(--text3)">Create a new game and others will join!</div>
+        </div>`;
+      return;
+    }
+    list.innerHTML='';
+    lobbies.forEach(l=>{
+      const players=Object.values(l.players||{});
+      const el=document.createElement('div');
+      el.className='card card-sm';
+      el.style.cssText='cursor:pointer;transition:border-color 0.15s';
+      el.innerHTML=`
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:700;font-size:0.9rem;margin-bottom:4px">${players.map(p=>`${p.avatar||'😎'} ${esc(p.username)}`).join(' · ')||'Empty'}</div>
+            <div class="text-xs" style="color:var(--text3)">${l.count} player${l.count===1?'':'s'} waiting · ${CAT_NAMES[l.category||'animals']||'Animals'}</div>
+          </div>
+          <button class="btn btn-primary btn-sm" style="width:auto;padding:0 16px;flex-shrink:0">Join</button>
+        </div>`;
+      el.querySelector('button').onclick=(e)=>{e.stopPropagation();stopBrowsing();joinLobby(l.key);};
+      list.appendChild(el);
     });
-  }
-  if(found){
-    await joinLobby(found);
-  } else {
-    // Auto-create a hostless lobby — first joiner becomes host
-    toast('No open lobbies — creating one for you...','info');
-    await createRandomLobby();
-  }
+  });
+}
+
+function stopBrowsing(){
+  if(browseRef){browseRef.off();browseRef=null;}
+  go('s-online');
+}
+
+async function createAndBrowse(){
+  if(browseRef){browseRef.off();browseRef=null;}
+  await createRandomLobby();
 }
 
 async function createRandomLobby(){
@@ -2490,6 +2565,17 @@ async function createRandomLobby(){
   renderLobbyCategory('animals');
   go('s-lobby');
   listenLobby(code);
+  // Auto-close after 5 minutes if still only 1 player
+  setTimeout(async()=>{
+    if(!G.lobbyCode||G.lobbyCode!==code) return;
+    const snap=await db.ref('lobbies/'+code).once('value');
+    if(!snap.exists()) return;
+    const d=snap.val();
+    if(d.status==='waiting'&&Object.keys(d.players||{}).length<2){
+      toast('No one joined — lobby closed after 5 minutes','err');
+      await leaveLobby();
+    }
+  }, 5*60*1000);
 }
 
 async function joinLobby(code){
@@ -2761,7 +2847,12 @@ function beginOnlineChat(d){
     if($('chat-round-lbl')) $('chat-round-lbl').textContent=`Round ${(ld.round||0)+1} of ${ld.maxRounds||5}`;
     const timerSecs=phase==='asking'?45:30;
     startTimer(timerSecs,ld.turnStartedAt||Date.now());
-    if(ld.status==='voting'||ld.status==='ended') openVoteModal();
+    if(ld.status==='roundsComplete'){
+      clearInterval(G.timerInt);
+      showRoundsModal(ld);
+      return;
+    }
+    if(ld.status==='voting'||ld.status==='ended') { closeRoundsModal(); openVoteModal(); return; }
   });
   // Listen messages
   db.ref('lobbies/'+G.lobbyCode+'/messages').on('child_added',snap=>{
@@ -2800,7 +2891,7 @@ async function advOnlineTurn(){
   let round=d.round||0;
   if(idx>=ord.length){idx=0;round++;}
   if(round>=(d.maxRounds||5)){
-    await db.ref('lobbies/'+G.lobbyCode).update({status:'voting'});
+    await db.ref('lobbies/'+G.lobbyCode).update({status:'roundsComplete',completedRounds:round});
     return;
   }
   await db.ref('lobbies/'+G.lobbyCode).update({currentTurnIdx:idx,round,phase:'asking',turnStartedAt:Date.now()});
@@ -2808,9 +2899,12 @@ async function advOnlineTurn(){
 
 async function sendMsg(){
   const ci=$('chat-in');
+  const sb=$('send-btn');
   const txt=ci.value.trim();
   if(!txt) return;
   ci.value='';
+  ci.disabled=true;
+  if(sb) sb.disabled=true;
   const msg={uid:G.uid,username:G.username,avatar:G.avatar,text:txt,time:Date.now(),ft:ftime()};
   await db.ref('lobbies/'+G.lobbyCode+'/messages').push(msg);
   if(G.isHost) setTimeout(advOnlineTurn,300);
@@ -2887,6 +2981,45 @@ async function submitOnlineVote(){
 }
 
 const closeVoteModal=()=>$('vote-modal').classList.add('hidden');
+const closeRoundsModal=()=>{ const m=$('rounds-modal'); if(m) m.classList.add('hidden'); };
+
+function showRoundsModal(ld){
+  const m=$('rounds-modal');
+  if(!m||!m.classList.contains('hidden')) return;
+  m.classList.remove('hidden');
+  const rounds=ld.completedRounds||ld.maxRounds||5;
+  const body=$('rounds-modal-body');
+  if(body) body.textContent=`${rounds} rounds done — what's next?`;
+  const btns=$('rounds-modal-btns');
+  if(!btns) return;
+  if(G.isHost){
+    btns.innerHTML=`
+      <button class="btn btn-primary" onclick="continueOnlineRounds()">➕ 5 More Rounds</button>
+      <button class="btn btn-danger" onclick="callOnlineVote()">🗳️ Vote Now</button>
+    `;
+  } else {
+    btns.innerHTML=`<div class="text-xs" style="color:var(--text3);padding:8px 0">Waiting for host to decide...</div>`;
+  }
+}
+
+async function continueOnlineRounds(){
+  closeRoundsModal();
+  const snap=await db.ref('lobbies/'+G.lobbyCode).once('value');
+  const d=snap.val();
+  const ord=d.turnOrder||[];
+  let idx=(d.currentTurnIdx||0)+1;
+  if(idx>=ord.length) idx=0;
+  await db.ref('lobbies/'+G.lobbyCode).update({
+    status:'playing', maxRounds:(d.maxRounds||5)+5, currentTurnIdx:idx,
+    phase:'asking', turnStartedAt:Date.now()
+  });
+  appendMsg({type:'system',text:'5 more rounds added!',ft:ftime()});
+}
+
+async function callOnlineVote(){
+  closeRoundsModal();
+  await db.ref('lobbies/'+G.lobbyCode).update({status:'voting'});
+}
 
 async function leaveLobby(){
   if(G.lobbyRef) G.lobbyRef.off();
