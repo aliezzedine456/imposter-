@@ -1112,7 +1112,6 @@ body {
         <div class="chat-title">برا السالفة</div>
         <div class="chat-sub" id="chat-round-lbl">Round 1</div>
       </div>
-      <button class="btn btn-outline btn-xs" style="width:auto;padding:0 12px;border-color:rgba(229,57,53,0.4);color:var(--red2)" onclick="openVoteModal()">🗳️ Vote</button>
     </div>
 
     <div class="turn-bar">
@@ -1381,8 +1380,8 @@ body {
       </div>
       <div class="gap16"></div>
       <div class="stack">
-        <button class="btn btn-primary" style="height:54px" onclick="playAgain()">🔄 &nbsp;Play Again</button>
-        <button class="btn btn-outline" onclick="go('s-main')">🏠 &nbsp;Main Menu</button>
+        <button class="btn btn-primary" id="r-play-again" style="height:54px" onclick="playAgain()">🔄 &nbsp;Play Again</button>
+        <button class="btn btn-outline" id="r-home" onclick="go('s-main')">🏠 &nbsp;Main Menu</button>
       </div>
     </div>
   </div>
@@ -1401,6 +1400,7 @@ body {
       <button class="shop-tab-btn" onclick="shopFilter('theme')">🎨 Themes</button>
       <button class="shop-tab-btn" onclick="shopFilter('consumable')">⚡ Power-ups</button>
       <button class="shop-tab-btn" onclick="shopFilter('boost')">💰 Boosts</button>
+      <button class="shop-tab-btn" onclick="shopFilter('online')">🌐 Online</button>
     </div>
     <div class="shop-grid" id="shop-items"></div>
   </div>
@@ -1574,7 +1574,14 @@ const SHOP = [
   {id:'double_xp',name:'2× XP Boost',desc:'Double XP in your next game',price:250,icon:'⚡',type:'boost',val:'2xp'},
   {id:'double_coins',name:'2× Coins Boost',desc:'Double coins in your next game',price:300,icon:'💰',type:'boost',val:'2coins'},
   {id:'xp_100',name:'100 XP Pack',desc:'Instantly gain 100 XP',price:180,icon:'✨',type:'boost',val:'xp100'},
+  {id:'coin_200',name:'200 Coin Bundle',desc:'Instantly receive 200 coins',price:140,icon:'🪙',type:'boost',val:'coin200'},
   {id:'coin_pack',name:'50 Coin Refill',desc:'Get 50 extra coins immediately',price:0,icon:'🪙',type:'boost',val:'refill',hidden:true},
+  // Online-only power-ups
+  {id:'call_vote',name:'Emergency Vote',desc:'Online: any player can instantly trigger a vote (use from chat)',price:220,icon:'🚨',type:'online',val:'call_vote'},
+  {id:'online_hint',name:'Spy Scope',desc:'Online: as the imposter, reveals the first 2 letters of the secret word',price:250,icon:'🔭',type:'online',val:'online_hint'},
+  {id:'vote_shield',name:'Vote Shield',desc:'Online: blocks 1 vote cast against you — activate before voting starts',price:380,icon:'🛡️',type:'online',val:'vote_shield'},
+  {id:'ghost_msg',name:'Ghost Message',desc:'Online: send 1 anonymous message in chat that appears as "???"',price:200,icon:'👻',type:'online',val:'ghost_msg'},
+  {id:'double_vote',name:'Double Vote',desc:'Online: your vote counts twice in the next voting round',price:300,icon:'🗳️',type:'online',val:'double_vote'},
 ];
 
 // ════════════════════════════════════════
@@ -1594,8 +1601,8 @@ let G = {
   oGuessSelected:null, oGuessOptions:[],
   // online
   lobbyCode:null, lobbyRef:null, isHost:false,
-  lobbyCategory:'animals', myRole:null, myWord:null,
-  onlinePlayers:[], myOnlineVote:null,
+  lobbyCategory:'animals', myRole:null, myWord:null, lastGameId:null, myOnlineVote:null,
+  onlinePlayers:[],
   timerInt:null, onlineStatus:null,
   revealInitialized:false,
 };
@@ -2117,24 +2124,51 @@ function giveUp() {
 }
 
 async function showResult(data){
-  const {guessCorrect,votedCorrectly,impName,word,cat}=data;
-  let emoji,title,desc,coins,xp;
+  const {guessCorrect,votedCorrectly,impName,word,cat,isImp,myVoteCorrect,isOnline}=data;
+  let emoji,title,desc,coins,xp,rewardNote='';
+  // Determine outcome
   if(votedCorrectly&&!guessCorrect){
     emoji='🎉';title='Players Win!';
     desc=`${impName} was caught and couldn't guess the word.`;
-    coins=60;xp=40;
   } else if(votedCorrectly&&guessCorrect){
     emoji='😤';title='Imposter Escapes!';
     desc=`${impName} was caught but guessed "${word}" correctly!`;
-    coins=25;xp=15;
   } else {
     emoji='🕵️';title='Imposter Wins!';
     desc=`${impName} outsmarted everyone! The word was "${word}".`;
-    coins=20;xp=12;
+  }
+  // Role-based rewards for online; flat rewards for local
+  if(isOnline&&isImp!==undefined){
+    if(isImp){
+      if(!votedCorrectly){
+        coins=150;xp=80;rewardNote='🔥 Perfect escape — nobody suspected you!';
+      } else if(guessCorrect){
+        coins=60;xp=35;rewardNote='💡 Caught but you guessed the word!';
+      } else {
+        coins=20;xp=10;rewardNote='Better luck next time.';
+      }
+    } else {
+      // Player reward varies by whether their personal vote was right
+      if(votedCorrectly&&!guessCorrect){
+        coins=myVoteCorrect?100:65;xp=myVoteCorrect?55:38;
+        rewardNote=myVoteCorrect?'✅ You voted correctly — bonus reward!':'Group caught the imposter.';
+      } else if(votedCorrectly&&guessCorrect){
+        coins=myVoteCorrect?45:28;xp=myVoteCorrect?25:16;
+        rewardNote=myVoteCorrect?'You voted right but the imposter escaped!':'Close call.';
+      } else {
+        coins=myVoteCorrect?55:20;xp=myVoteCorrect?30:12;
+        rewardNote=myVoteCorrect?'You had the right idea, but the group voted wrong.':'The imposter fooled everyone.';
+      }
+    }
+  } else {
+    // Offline flat rewards
+    if(votedCorrectly&&!guessCorrect){ coins=70;xp=45; }
+    else if(votedCorrectly&&guessCorrect){ coins=30;xp=18; }
+    else { coins=25;xp=14; }
   }
   $('r-emoji').textContent=emoji;
   $('r-title').textContent=title;
-  $('r-desc').textContent=desc;
+  $('r-desc').textContent=desc+(rewardNote?'\n'+rewardNote:'');
   $('r-word').textContent=word;
   $('r-imp').textContent=impName;
   $('r-coins').textContent='+'+coins;
@@ -2151,6 +2185,17 @@ async function showResult(data){
       `).join('')+'</div>';
   } else { tally.innerHTML=''; }
   await addRewards(coins,xp);
+  // Update Play Again button: online → back to lobby, offline → play again
+  const raBtn=$('r-play-again');
+  if(raBtn){
+    if(isOnline){
+      raBtn.textContent='🏠 Back to Lobby';
+      raBtn.onclick=()=>{ if(G.lobbyCode) go('s-lobby'); else go('s-online'); };
+    } else {
+      raBtn.textContent='🔄 Play Again';
+      raBtn.onclick=playAgain;
+    }
+  }
   go('s-result');
 }
 
@@ -2389,6 +2434,13 @@ function listenLobby(code){
       renderLobbyAction(count,d,players);
     }
 
+    // Detect new game: reset flags when gameId changes
+    if(d.gameId && d.gameId!==G.lastGameId){
+      G.lastGameId=d.gameId;
+      G.revealInitialized=false;
+      chatStarted=false;
+      if(readyPlayersRef){ readyPlayersRef.off(); readyPlayersRef=null; }
+    }
     if(d.status==='revealing'&&!G.revealInitialized) beginOnlineReveal(d);
     if(d.status==='playing'&&!chatStarted) beginOnlineChat(d);
   });
@@ -2400,23 +2452,32 @@ function setLobbyCategory(cat){
   db.ref('lobbies/'+G.lobbyCode+'/category').set(cat);
 }
 
+let startingGame=false;
 async function startOnlineGame(){
   if(!G.isHost){ toast('Only the host can start','err'); return; }
-  const snap=await db.ref('lobbies/'+G.lobbyCode).once('value');
-  const d=snap.val();
-  const uids=Object.keys(d.players||{});
-  if(uids.length<2){ toast('Need at least 2 players','err'); return; }
-  const word=rand(WORDS[G.lobbyCategory]);
-  const impUid=rand(uids);
-  const roles={};
-  uids.forEach(u=>{ roles[u]=u===impUid?'imposter':'player'; });
-  await db.ref('lobbies/'+G.lobbyCode).update({
-    status:'revealing', word, impUid, roles,
-    readyPlayers:{}, totalPlayers:uids.length,
-    turnOrder:shuffle(uids), currentTurnIdx:0,
-    round:0, maxRounds:5, votes:{},
-    turnStartedAt:Date.now(), phase:'asking'
-  });
+  if(startingGame) return;
+  startingGame=true;
+  try {
+    const snap=await db.ref('lobbies/'+G.lobbyCode).once('value');
+    const d=snap.val();
+    const uids=Object.keys(d.players||{});
+    if(uids.length<2){ toast('Need at least 2 players','err'); startingGame=false; return; }
+    const word=rand(WORDS[G.lobbyCategory]);
+    const impUid=rand(uids);
+    const roles={};
+    uids.forEach(u=>{ roles[u]=u===impUid?'imposter':'player'; });
+    const gameId=Date.now();
+    await db.ref('lobbies/'+G.lobbyCode+'/messages').remove();
+    await db.ref('lobbies/'+G.lobbyCode+'/votes').remove();
+    await db.ref('lobbies/'+G.lobbyCode).update({
+      status:'revealing', gameId, word, impUid, roles,
+      readyPlayers:{}, totalPlayers:uids.length,
+      turnOrder:shuffle(uids), currentTurnIdx:0,
+      round:0, maxRounds:5, votes:{},
+      turnStartedAt:Date.now(), phase:'asking'
+    });
+  } catch(e){ toast('Failed to start — try again','err'); }
+  startingGame=false;
 }
 
 // ════════════════════════════════════════
@@ -2510,7 +2571,11 @@ function beginOnlineChat(d){
   if(chatStarted) return;
   chatStarted=true;
   G.onlinePlayers=Object.values(d.players||{});
+  G.myOnlineVote=null;
   G.onlineStatus='playing';
+  // Clear previous game's chat messages
+  const chatBox=$('chat-msgs');
+  if(chatBox) chatBox.innerHTML='<div class="msg system"><div class="msg-bubble" style="background:var(--bg3);color:var(--text2);text-align:center;font-size:0.82rem">🕵️ New game started — figure out who the imposter is!</div></div>';
   go('s-chat');
   listenTyping();
   db.ref('lobbies/'+G.lobbyCode+'/typing/'+G.uid).onDisconnect().remove();
@@ -2545,6 +2610,7 @@ function beginOnlineChat(d){
     if(newStatus!==G.onlineStatus){
       const prev=G.onlineStatus;
       G.onlineStatus=newStatus;
+      if(newStatus==='revealing'){ clearInterval(G.timerInt); closeAllModals(); chatStarted=false; G.revealInitialized=false; beginOnlineReveal(ld); return; }
       if(newStatus==='roundsComplete'){ clearInterval(G.timerInt); closeAllModals(); showRoundsModal(ld); return; }
       if(newStatus==='voting'){ clearInterval(G.timerInt); closeAllModals(); openVoteModal(); return; }
       if(newStatus==='ended'){ clearInterval(G.timerInt); closeAllModals(); showOnlineVoteResults(ld); return; }
@@ -2602,9 +2668,22 @@ function listenVotes(){
     const pCount=Object.keys(ld.players||{}).length;
     const voteCount=Object.keys(votes).length;
     if(voteCount>=pCount){
-      // All voted — tally
+      // All voted — tally (with doubleVote and voteShield support)
+      const players=ld.players||{};
       const tally={};
-      Object.values(votes).forEach(v=>{ tally[v]=(tally[v]||0)+1; });
+      Object.entries(votes).forEach(([voterUid,targetUid])=>{
+        const voter=players[voterUid]||{};
+        const weight=voter.doubleVote?2:1;
+        tally[targetUid]=(tally[targetUid]||0)+weight;
+        if(voter.doubleVote) db.ref('lobbies/'+G.lobbyCode+'/players/'+voterUid+'/doubleVote').remove();
+      });
+      // Apply vote shields: remove 1 vote from shielded players
+      Object.entries(players).forEach(([uid,p])=>{
+        if(p.hasShield&&tally[uid]>0){
+          tally[uid]--;
+          db.ref('lobbies/'+G.lobbyCode+'/players/'+uid+'/hasShield').remove();
+        }
+      });
       let max=0, votedOut='';
       for(const [u,c] of Object.entries(tally)){ if(c>max){max=c;votedOut=u;} }
       await db.ref('lobbies/'+G.lobbyCode).update({
@@ -2757,11 +2836,14 @@ function showOnlineResultFromFirebase(ld){
   G.oWord=ld.word; G.oCategory=G.lobbyCategory||ld.category||'animals'; G.oVotes={};
   const votedOutPlayer=G.onlinePlayers.find(p=>p.uid===ld.votedOut)||{};
   G.oVoteResult={votedOut:votedOutPlayer.username,impName:imp.username};
+  const isImp=G.uid===ld.impUid;
+  const myVoteCorrect=!!(G.myOnlineVote&&G.myOnlineVote===ld.impUid);
   showResult({
     guessCorrect:!!ld.impGuessCorrect,
     votedCorrectly:ld.votedOut===ld.impUid,
     impName:imp.username||'?',
-    word:ld.word, cat:G.lobbyCategory||ld.category||'animals'
+    word:ld.word, cat:G.lobbyCategory||ld.category||'animals',
+    isImp, myVoteCorrect, isOnline:true
   });
 }
 
@@ -2975,10 +3057,9 @@ function copyCode(){
 // ════════════════════════════════════════
 function shopFilter(type){
   activeShopFilter=type;
-  // Update tab buttons
   document.querySelectorAll('.shop-tab-btn').forEach(b=>b.classList.remove('active'));
   const btns=document.querySelectorAll('.shop-tab-btn');
-  const idx=['all','theme','consumable','boost'].indexOf(type);
+  const idx=['all','theme','consumable','boost','online'].indexOf(type);
   if(idx>=0&&btns[idx]) btns[idx].classList.add('active');
   renderShop();
 }
@@ -3080,6 +3161,57 @@ function useItem(item){
       G.coinsBoostActive=true;
       saveUser(); renderShop();
       toast('💰 2× Coins active for your next game!','ok');
+      break;
+    case 'coin200':
+      if(!(G.itemCounts['coin_200']||0)){ toast('No coin bundles!','err'); return; }
+      G.itemCounts['coin_200']--;
+      G.coins+=200;
+      saveUser(); updateUI(); renderShop();
+      toast('🪙 +200 coins added!','ok');
+      break;
+    case 'call_vote':
+      if(!(G.itemCounts['call_vote']||0)){ toast('No emergency vote tokens!','err'); return; }
+      if(!G.lobbyCode||!chatStarted){ toast('Use during an online game!','err'); return; }
+      G.itemCounts['call_vote']--;
+      saveUser(); renderShop();
+      toast('🚨 Emergency vote called!','ok');
+      db.ref('lobbies/'+G.lobbyCode).update({status:'voting',votes:{}});
+      if(G.isHost) listenVotes();
+      break;
+    case 'online_hint':
+      if(!(G.itemCounts['online_hint']||0)){ toast('No spy scope tokens!','err'); return; }
+      if(!G.lobbyCode||G.myRole!=='imposter'){ toast('Use during online play as the imposter!','err'); return; }
+      G.itemCounts['online_hint']--;
+      saveUser(); renderShop();
+      { const w=G.myWord||''; const hint=w.slice(0,2)||'??'; toast(`🔭 Word starts with: "${hint}..."${w.length?' ('+w.length+' letters)':''}`, 'ok'); }
+      break;
+    case 'vote_shield':
+      if(!(G.itemCounts['vote_shield']||0)){ toast('No vote shields!','err'); return; }
+      if(!G.lobbyCode){ toast('Use during an online game!','err'); return; }
+      G.itemCounts['vote_shield']--;
+      db.ref('lobbies/'+G.lobbyCode+'/players/'+G.uid+'/hasShield').set(true);
+      saveUser(); renderShop();
+      toast('🛡️ Vote Shield active! 1 vote against you will be blocked.','ok');
+      break;
+    case 'ghost_msg':
+      if(!(G.itemCounts['ghost_msg']||0)){ toast('No ghost messages!','err'); return; }
+      if(!G.lobbyCode||!chatStarted){ toast('Use during online chat!','err'); return; }
+      G.itemCounts['ghost_msg']--;
+      saveUser(); renderShop();
+      { const txt=prompt('👻 Type your anonymous message:');
+        if(txt&&txt.trim()){
+          db.ref('lobbies/'+G.lobbyCode+'/messages').push({uid:'ghost',username:'???',text:txt.trim(),time:Date.now(),ft:ftime()});
+          toast('👻 Ghost message sent!','ok');
+        } else { G.itemCounts['ghost_msg']++; saveUser(); renderShop(); }
+      }
+      break;
+    case 'double_vote':
+      if(!(G.itemCounts['double_vote']||0)){ toast('No double vote tokens!','err'); return; }
+      if(!G.lobbyCode){ toast('Use during an online game!','err'); return; }
+      G.itemCounts['double_vote']--;
+      db.ref('lobbies/'+G.lobbyCode+'/players/'+G.uid+'/doubleVote').set(true);
+      saveUser(); renderShop();
+      toast('🗳️ Double Vote active! Your next vote counts twice.','ok');
       break;
     default: toast('Use this during a game!','info');
   }
@@ -3240,27 +3372,56 @@ async function togglePref(k){
 async function loadLb(){
   const w=$('lb-wrap');
   w.innerHTML='<div class="loader"><div class="spin"></div></div>';
-  const snap=await db.ref('users').orderByChild('xp').limitToLast(25).once('value');
-  const users=[];
-  snap.forEach(s=>users.push(s.val()));
-  users.sort((a,b)=>(b.xp||0)-(a.xp||0));
-  const medals=['🥇','🥈','🥉'];
-  w.innerHTML='';
-  users.forEach((u,i)=>{
-    const el=document.createElement('div');
-    el.className='lb-row'+(u.uid===G.uid?' me':'');
-    el.innerHTML=`
-      <div class="lb-rank">${medals[i]||('#'+(i+1))}</div>
-      <div class="lb-av">${u.avatar||'😎'}</div>
-      <div class="lb-info">
-        <div class="lb-name">${esc(u.username||'Player')} ${u.uid===G.uid?'<span class="badge badge-red" style="font-size:0.64rem">You</span>':''}</div>
-        <div class="lb-sub">Lv ${u.level||1} · ${u.gamesPlayed||0} games</div>
-      </div>
-      <div class="lb-xp">${u.xp||0} XP</div>
-    `;
-    w.appendChild(el);
-  });
-  if(!users.length) w.innerHTML='<div class="text-sm text-center" style="padding:40px">No players yet</div>';
+  try {
+    const snap=await db.ref('users').orderByChild('xp').limitToLast(25).once('value');
+    const users=[];
+    snap.forEach(s=>{ const v=s.val(); if(v&&v.username) users.push(v); });
+    users.sort((a,b)=>(b.xp||0)-(a.xp||0));
+    if(!users.length){ w.innerHTML='<div class="text-sm text-center" style="padding:40px;color:var(--text2)">No players yet. Be the first!</div>'; return; }
+    w.innerHTML='';
+
+    // Podium for top 3
+    if(users.length>=3){
+      const podium=document.createElement('div');
+      podium.style.cssText='display:flex;align-items:flex-end;justify-content:center;gap:6px;padding:20px 12px 0;background:var(--bg2);border-bottom:1px solid var(--border)';
+      const slots=[{rank:1,h:'88px',c:'var(--text3)'},{rank:0,h:'110px',c:'var(--amber2)'},{rank:2,h:'68px',c:'#cd7f32'}];
+      slots.forEach(({rank,h,c})=>{
+        const u=users[rank];
+        if(!u) return;
+        const col=document.createElement('div');
+        col.style.cssText='flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;max-width:120px';
+        col.innerHTML=`
+          <div style="font-size:${rank===0?'2rem':'1.5rem'};line-height:1">${u.avatar||'😎'}</div>
+          <div style="font-size:0.75rem;font-weight:700;max-width:80px;text-align:center;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(u.username||'?')}${u.uid===G.uid?'<span style="color:var(--red2)"> ●</span>':''}</div>
+          <div style="width:100%;height:${h};background:${c};border-radius:6px 6px 0 0;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding-top:8px">
+            <div style="font-size:1.4rem;line-height:1">${['🥇','🥈','🥉'][rank]}</div>
+            <div style="font-size:0.68rem;font-weight:800;color:rgba(0,0,0,0.55);margin-top:3px">${(u.xp||0).toLocaleString()} XP</div>
+          </div>
+        `;
+        podium.appendChild(col);
+      });
+      w.appendChild(podium);
+    }
+
+    // Full ranked list
+    const medals=['🥇','🥈','🥉'];
+    users.forEach((u,i)=>{
+      const el=document.createElement('div');
+      el.className='lb-row'+(u.uid===G.uid?' me':'');
+      el.innerHTML=`
+        <div class="lb-rank" style="font-size:${i<3?'1.1rem':'0.8rem'};min-width:28px;text-align:center">${medals[i]||('#'+(i+1))}</div>
+        <div class="lb-av" style="font-size:1.3rem">${u.avatar||'😎'}</div>
+        <div class="lb-info" style="flex:1;min-width:0">
+          <div class="lb-name" style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:0.9rem;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(u.username||'Player')}${u.uid===G.uid?' <span class="badge badge-red" style="font-size:0.6rem;flex-shrink:0">You</span>':''}</div>
+          <div class="lb-sub" style="font-size:0.75rem;color:var(--text2);margin-top:1px">Level ${u.level||1} · ${u.gamesPlayed||0} games</div>
+        </div>
+        <div class="lb-xp" style="font-size:0.82rem;font-weight:700;white-space:nowrap;color:var(--amber2)">${(u.xp||0).toLocaleString()} XP</div>
+      `;
+      w.appendChild(el);
+    });
+  } catch(e){
+    w.innerHTML='<div class="text-sm text-center" style="padding:40px;color:var(--text2)">Failed to load leaderboard</div>';
+  }
 }
 
 // ════════════════════════════════════════
