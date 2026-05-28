@@ -58,6 +58,8 @@ body {
 @keyframes scaleIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
 @keyframes slideLeft { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes tdot { 0%,80%,100%{opacity:0.2;transform:translateY(0)} 40%{opacity:1;transform:translateY(-3px)} }
+.tdot { display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--text3); }
 @keyframes spinWheel { from { transform: rotate(0deg); } to { transform: rotate(1800deg); } }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 @keyframes bounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
@@ -1387,9 +1389,8 @@ body {
 <div class="screen" id="s-on-reveal">
   <div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;width:100%;max-width:440px;margin:0 auto">
     <div style="text-align:center;margin-bottom:24px">
-      <div class="text-sm" style="margin-bottom:6px">📱 Pass phone to</div>
       <div style="font-size:1.6rem;font-weight:800" id="on-reveal-name">---</div>
-      <div class="text-xs" style="margin-top:6px;color:var(--text3)">Let them see their role, then pass back</div>
+      <div class="text-xs" style="margin-top:6px;color:var(--text3)">Your private role — don't show others!</div>
     </div>
 
     <div class="flip-card" id="on-flip-card" onclick="flipOnlineCard()">
@@ -1410,7 +1411,7 @@ body {
     <div class="gap20"></div>
 
     <button class="btn btn-outline" id="on-ready-btn" onclick="markReady()" disabled style="max-width:300px">
-      ✅ &nbsp;I'm ready — pass phone
+      ✅ &nbsp;I'm ready!
     </button>
 
     <div class="gap12"></div>
@@ -1427,7 +1428,6 @@ body {
         <div class="chat-title">برا السالفة</div>
         <div class="chat-sub" id="chat-round-lbl">Round 1</div>
       </div>
-      <button class="btn btn-danger btn-sm" style="width:auto;padding:0 14px" onclick="openVoteModal()">Vote</button>
     </div>
 
     <div class="turn-bar">
@@ -1452,8 +1452,10 @@ body {
       <div class="msg system"><div class="msg-bubble">Game started! Figure out who the imposter is.</div></div>
     </div>
 
+    <div id="typing-indicator" style="min-height:22px;padding:2px 16px 4px;font-size:0.78rem;color:var(--text3);font-style:italic;display:flex;align-items:center;gap:6px"></div>
+
     <div class="chat-input-wrap">
-      <input class="chat-field" id="chat-in" placeholder="Send a message..." disabled>
+      <input class="chat-field" id="chat-in" placeholder="Send a message..." disabled oninput="onChatInput()">
       <button class="send-btn" id="send-btn" onclick="sendMsg()" disabled>➤</button>
     </div>
   </div>
@@ -2786,6 +2788,8 @@ function beginOnlineChat(d){
   chatStarted=true;
   G.onlinePlayers=Object.values(d.players||{});
   go('s-chat');
+  listenTyping();
+  db.ref('lobbies/'+G.lobbyCode+'/typing/'+G.uid).onDisconnect().remove();
   applyTheme();
   // Listen lobby for turn/status changes
   G.lobbyRef.on('value',snap=>{
@@ -2905,9 +2909,12 @@ async function sendMsg(){
   ci.value='';
   ci.disabled=true;
   if(sb) sb.disabled=true;
+  // Clear typing status
+  clearTyping();
   const msg={uid:G.uid,username:G.username,avatar:G.avatar,text:txt,time:Date.now(),ft:ftime()};
   await db.ref('lobbies/'+G.lobbyCode+'/messages').push(msg);
-  if(G.isHost) setTimeout(advOnlineTurn,300);
+  // Sender advances the turn (only active-turn player can send, so safe)
+  setTimeout(advOnlineTurn, 300);
 }
 
 function appendMsg(msg){
@@ -2928,6 +2935,49 @@ function appendMsg(msg){
   }
   box.appendChild(el);
   box.scrollTop=box.scrollHeight;
+}
+
+// ── Typing indicator ──────────────────────────────────────────
+let typingTimer=null;
+let typingRef=null;
+
+function onChatInput(){
+  if(!G.lobbyCode||!G.uid) return;
+  const ci=$('chat-in');
+  if(ci.disabled) return;
+  // Write typing presence
+  db.ref('lobbies/'+G.lobbyCode+'/typing/'+G.uid).set({username:G.username,ts:Date.now()});
+  // Clear after 3 seconds of inactivity
+  clearTimeout(typingTimer);
+  typingTimer=setTimeout(clearTyping,3000);
+}
+
+function clearTyping(){
+  clearTimeout(typingTimer);
+  if(G.lobbyCode&&G.uid)
+    db.ref('lobbies/'+G.lobbyCode+'/typing/'+G.uid).remove();
+}
+
+function listenTyping(){
+  if(!G.lobbyCode) return;
+  db.ref('lobbies/'+G.lobbyCode+'/typing').on('value',snap=>{
+    const ind=$('typing-indicator');
+    if(!ind) return;
+    if(!snap.exists()){ind.textContent='';return;}
+    const typers=[];
+    const now=Date.now();
+    snap.forEach(s=>{
+      const v=s.val();
+      if(s.key!==G.uid&&v&&(now-v.ts)<5000) typers.push(v.username);
+    });
+    if(!typers.length){ind.innerHTML='';return;}
+    const dots=`<span style="display:inline-flex;gap:2px;align-items:center">
+      <span class="tdot" style="animation:tdot 1s infinite 0s"></span>
+      <span class="tdot" style="animation:tdot 1s infinite 0.2s"></span>
+      <span class="tdot" style="animation:tdot 1s infinite 0.4s"></span>
+    </span>`;
+    ind.innerHTML=`${dots} ${esc(typers.join(', '))} ${typers.length===1?'is':'are'} typing...`;
+  });
 }
 
 function openVoteModal(){
