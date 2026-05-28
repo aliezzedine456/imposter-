@@ -2364,15 +2364,15 @@ function showGuess() {
   const btn = $('submit-guess-btn');
   if(btn) btn.disabled = true;
 
-  // Build 4 choices: correct word + 3 random decoys from same category
+  // Build 8 choices: correct word + 7 random decoys from same category
   const pool = WORDS[G.oCategory].filter(w => w !== G.oWord);
-  const decoys = shuffle(pool).slice(0, 3);
+  const decoys = shuffle(pool).slice(0, 7);
   G.oGuessOptions = shuffle([G.oWord, ...decoys]);
 
   const grid = $('guess-choices');
   if(grid) {
     grid.innerHTML = '';
-    const letters = ['A','B','C','D'];
+    const letters = ['A','B','C','D','E','F','G','H'];
     G.oGuessOptions.forEach((word, i) => {
       const el = document.createElement('div');
       el.className = 'guess-opt';
@@ -2856,7 +2856,9 @@ function beginOnlineChat(d){
       showRoundsModal(ld);
       return;
     }
-    if(ld.status==='voting'||ld.status==='ended') { closeRoundsModal(); openVoteModal(); return; }
+    if(ld.status==='voting') { closeRoundsModal(); openVoteModal(); return; }
+    if(ld.status==='ended') { closeRoundsModal(); closeVoteModal(); goOnlineSpinner(ld); return; }
+    if(ld.status==='result') { closeRoundsModal(); closeVoteModal(); showOnlineResultFromFirebase(ld); return; }
   });
   // Listen messages
   db.ref('lobbies/'+G.lobbyCode+'/messages').on('child_added',snap=>{
@@ -2890,10 +2892,10 @@ async function advOnlineTurn(){
     await db.ref('lobbies/'+G.lobbyCode).update({phase:'answering',turnStartedAt:Date.now()});
     return;
   }
-  // Answering phase done → move to next asker, back to asking (45s)
+  // Answering phase done → one Q+A = one full round
   let idx=(d.currentTurnIdx||0)+1;
-  let round=d.round||0;
-  if(idx>=ord.length){idx=0;round++;}
+  let round=(d.round||0)+1;  // every Q+A pair counts as 1 round
+  if(idx>=ord.length){idx=0;}
   if(round>=(d.maxRounds||5)){
     await db.ref('lobbies/'+G.lobbyCode).update({status:'roundsComplete',completedRounds:round});
     return;
@@ -3005,8 +3007,8 @@ async function submitOnlineVote(){
   if(!G.myOnlineVote){toast('Pick someone','err');return;}
   await db.ref('lobbies/'+G.lobbyCode+'/votes/'+G.uid).set(G.myOnlineVote);
   closeVoteModal();
-  toast('Vote submitted!','ok');
-  // check all voted
+  toast('Vote submitted! Waiting for others...','ok');
+  // Check if all players have voted (host tallies and advances)
   const snap=await db.ref('lobbies/'+G.lobbyCode).once('value');
   const d=snap.val();
   const votes=d.votes||{};
@@ -3016,18 +3018,111 @@ async function submitOnlineVote(){
     Object.values(votes).forEach(v=>{tally[v]=(tally[v]||0)+1;});
     let max=0,votedOut='';
     for(const [u,c] of Object.entries(tally)){if(c>max){max=c;votedOut=u;}}
-    await db.ref('lobbies/'+G.lobbyCode).update({status:'ended',votedOut});
-    // Show result
-    const impPlayer=G.onlinePlayers.find(p=>p.uid===d.impUid)||{};
-    G.oVoteResult={votedOut:(G.onlinePlayers.find(p=>p.uid===votedOut)||{}).username,impName:impPlayer.username};
-    G.oWord=d.word; G.oCategory=G.lobbyCategory; G.oVotes={};
-    showResult({
-      guessCorrect:false,
-      votedCorrectly:votedOut===d.impUid,
-      impName:impPlayer.username||'?',
-      word:d.word,cat:G.lobbyCategory
+    // Push 'ended' status → all clients' Firebase listener shows spinner
+    await db.ref('lobbies/'+G.lobbyCode).update({
+      status:'ended', votedOut,
+      impUid:d.impUid, word:d.word
     });
   }
+}
+
+function goOnlineSpinner(ld){
+  if($('s-spinner').classList.contains('active')) return; // already there
+  const imp=G.onlinePlayers.find(p=>p.uid===ld.impUid)||{};
+  G.oVoteResult={impName:imp.username||'?',impUid:ld.impUid,votedOut:ld.votedOut};
+  G.oWord=ld.word; G.oCategory=G.lobbyCategory||ld.category||'animals';
+  go('s-spinner');
+  $('spin-result').innerHTML=`<button class="btn btn-primary" style="max-width:260px" onclick="doOnlineSpin()">🌀 &nbsp;Spin!</button>`;
+  $('spin-wheel').classList.remove('spinning');
+}
+
+function doOnlineSpin(){
+  const w=$('spin-wheel');
+  w.classList.add('spinning');
+  $('spin-result').innerHTML='';
+  setTimeout(()=>{
+    const impName=G.oVoteResult.impName;
+    $('spin-result').innerHTML=`
+      <div class="big-name">${esc(impName)}</div>
+      <div class="text-sm" style="margin-top:6px">is the IMPOSTER! 🕵️</div>
+      <div class="gap16"></div>
+      <button class="btn btn-danger" style="max-width:260px" onclick="goOnlineGuess()">
+        ${G.uid===G.oVoteResult.impUid?'🤔 Guess the word!':'See the guess →'}
+      </button>
+    `;
+    vib(200);
+  },3200);
+}
+
+function goOnlineGuess(){
+  const imp=G.onlinePlayers.find(p=>p.uid===G.oVoteResult.impUid)||{};
+  $('imp-name').textContent=imp.username||'?';
+  $('imp-cat').textContent=CAT_NAMES[G.oCategory]||G.oCategory;
+  G.oGuessSelected=null;
+  const btn=$('submit-guess-btn');
+  const giveUpBtn=document.querySelector('#s-guess .btn-ghost');
+  const isImp=G.uid===G.oVoteResult.impUid;
+  const grid=$('guess-choices');
+
+  if(isImp){
+    if(btn){btn.disabled=true;btn.style.display='';btn.textContent='Confirm Answer';btn.onclick=()=>submitOnlineGuess();}
+    if(giveUpBtn){giveUpBtn.style.display='';giveUpBtn.textContent='I have no idea';giveUpBtn.onclick=()=>submitOnlineGuess(true);}
+    const pool=WORDS[G.oCategory].filter(w=>w!==G.oWord);
+    const decoys=shuffle(pool).slice(0,7);
+    G.oGuessOptions=shuffle([G.oWord,...decoys]);
+    if(grid){
+      grid.innerHTML='';
+      const letters=['A','B','C','D','E','F','G','H'];
+      G.oGuessOptions.forEach((word,i)=>{
+        const el=document.createElement('div');
+        el.className='guess-opt';
+        el.innerHTML=`<div class="go-letter">${letters[i]}</div><div class="go-word">${esc(word)}</div>`;
+        el.onclick=()=>{
+          G.oGuessSelected=word;
+          document.querySelectorAll('.guess-opt').forEach(o=>o.classList.remove('selected'));
+          el.classList.add('selected');
+          if(btn) btn.disabled=false;
+          vib();
+        };
+        grid.appendChild(el);
+      });
+    }
+  } else {
+    if(btn) btn.style.display='none';
+    if(giveUpBtn) giveUpBtn.style.display='none';
+    if(grid) grid.innerHTML=`
+      <div style="grid-column:1/-1;text-align:center;padding:24px 0">
+        <div style="font-size:2rem;margin-bottom:10px">🤔</div>
+        <div style="font-weight:700;font-size:1rem;margin-bottom:4px">
+          ${esc(imp.username||'Impostor')} is picking the word...
+        </div>
+        <div class="text-xs" style="color:var(--text3)">Wait for them to guess!</div>
+      </div>`;
+  }
+  go('s-guess');
+}
+
+async function submitOnlineGuess(giveUp=false){
+  if(!giveUp&&!G.oGuessSelected){toast('Pick a word first','err');return;}
+  const guess=giveUp?'':G.oGuessSelected;
+  const correct=guess===G.oWord;
+  await db.ref('lobbies/'+G.lobbyCode).update({
+    status:'result', impGuess:guess, impGuessCorrect:correct
+  });
+}
+
+function showOnlineResultFromFirebase(ld){
+  const imp=G.onlinePlayers.find(p=>p.uid===ld.impUid)||{};
+  G.oWord=ld.word; G.oCategory=G.lobbyCategory||ld.category||'animals'; G.oVotes={};
+  const votedOutPlayer=G.onlinePlayers.find(p=>p.uid===ld.votedOut)||{};
+  G.oVoteResult={votedOut:votedOutPlayer.username,impName:imp.username};
+  showResult({
+    guessCorrect:!!ld.impGuessCorrect,
+    votedCorrectly:ld.votedOut===ld.impUid,
+    impName:imp.username||'?',
+    word:ld.word,
+    cat:G.lobbyCategory||ld.category||'animals'
+  });
 }
 
 const closeVoteModal=()=>$('vote-modal').classList.add('hidden');
