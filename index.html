@@ -2352,11 +2352,16 @@ function beginOnlineReveal(d){
       G.onlinePlayers.forEach(p=>{
         const isReady=!!ready[p.uid];
         const pip=document.createElement('div');pip.className='ready-pip'+(isReady?' ready':'');
-        pip.textContent=p.avatar+' '+(isReady?'✓':'...');
+        pip.textContent=(p.avatar||'😎')+' '+(isReady?'✓':'...');
         statusRow.appendChild(pip);
       });
     }
     setText('on-waiting-txt',`${readyCount}/${total} ready`);
+    // When all players are ready, host transitions to playing
+    if(total>0 && readyCount>=total && G.isHost){
+      if(readyPlayersRef){readyPlayersRef.off();readyPlayersRef=null}
+      rtdb.ref('lobbies/'+G.lobbyCode).update({status:'playing'});
+    }
   });
 }
 
