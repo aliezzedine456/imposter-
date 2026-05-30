@@ -2526,12 +2526,27 @@ async function sendMsg(){
   clearTyping();
   const msg={uid:G.uid,username:G.username,avatar:G.equippedAvatar||G.avatar,text:txt,time:Date.now(),ft:ftime(),level:G.level||1};
   await rtdb.ref('lobbies/'+G.lobbyCode+'/messages').push(msg);
-  // Phase: asker sends → move to answering phase; answerer sends → advance turn
+  // Phase: asker sends → move to answering; answerer sends → advance turn.
+  // Any player (not just host) must be able to write phase/turn to RTDB.
   const phase=G.currentPhase||'asking';
   if(phase==='asking'){
-    setTimeout(()=>rtdb.ref('lobbies/'+G.lobbyCode).update({phase:'answering'}),300);
+    // Asker just asked → unlock answerer's input
+    await rtdb.ref('lobbies/'+G.lobbyCode).update({phase:'answering'});
   }else{
-    setTimeout(advOnlineTurn,300);
+    // Answerer just replied → rotate to next pair (any player can do this)
+    try{
+      const snap=await rtdb.ref('lobbies/'+G.lobbyCode).once('value');
+      const d=snap.val()||{};
+      const ord=d.turnOrder||[];
+      let idx=((d.currentTurnIdx||0)+1)%ord.length;
+      const newRound=(d.round||0)+1;
+      const maxR=d.maxRounds||5;
+      if(newRound>maxR){
+        await rtdb.ref('lobbies/'+G.lobbyCode).update({status:'roundsUp',completedRounds:newRound-1});
+      }else{
+        await rtdb.ref('lobbies/'+G.lobbyCode).update({currentTurnIdx:idx,round:newRound,phase:'asking',turnStartedAt:Date.now()});
+      }
+    }catch(e){}
   }
 }
 
