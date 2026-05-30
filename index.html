@@ -2381,8 +2381,9 @@ function beginOnlineChat(d){
   chatStarted=true;
   G.onlinePlayers=Object.values(d.players||{});
   go('s-chat');
+  // input enable/disable is controlled per-turn by updateOnlineTurnUI
   const inp=$('chat-in'),sb=$('send-btn');
-  if(inp)inp.disabled=false;if(sb)sb.disabled=false;
+  if(inp)inp.disabled=true;if(sb)sb.disabled=true;
   const msgs=$('chat-msgs');if(msgs)msgs.innerHTML='<div class="msg system"><div class="msg-bubble">Game started! Figure out who the imposter is 🕵️</div></div>';
   rtdb.ref('lobbies/'+G.lobbyCode+'/messages').on('child_added',snap=>{
     if(!snap.exists())return;
@@ -2410,20 +2411,30 @@ function beginOnlineChat(d){
 function updateOnlineTurnUI(d){
   const turnOrder=d.turnOrder||[];
   const idx=d.currentTurnIdx||0;
+  const phase=d.phase||'asking';
   const askerUid=turnOrder[idx%turnOrder.length];
   const nextUid=turnOrder[(idx+1)%turnOrder.length];
   const asker=G.onlinePlayers.find(p=>p.uid===askerUid);
   const answerer=G.onlinePlayers.find(p=>p.uid===nextUid);
-  if(asker)setText('turn-who',asker.username);
-  if(answerer)setText('turn-answerer',answerer?.username||'—');
+  // Store phase state for sendMsg
+  G.currentPhase=phase;G.currentAskerUid=askerUid;G.currentAnswererUid=nextUid;
+  const askerName=(asker?.avatar?asker.avatar+' ':'')+( asker?.username||'?');
+  const answererName=(answerer?.avatar?answerer.avatar+' ':'')+( answerer?.username||'?');
+  setText('turn-who',askerName);
+  setText('turn-answerer',answererName);
   setText('chat-round-lbl','Round '+(d.round||1));
-  if(askerUid===G.uid){
-    setText('turn-phase-lbl','YOUR TURN — ask a question!');
-    startTimer(45);
-  }else{
-    setText('turn-phase-lbl','Asking now');
-    stopTimer();
-  }
+  // Enable input ONLY for the current speaker
+  const inp=$('chat-in'),sb=$('send-btn');
+  const amAsker=askerUid===G.uid, amAnswerer=nextUid===G.uid;
+  const myTurnToAsk=phase==='asking'&&amAsker;
+  const myTurnToAnswer=phase==='answering'&&amAnswerer;
+  const canSend=myTurnToAsk||myTurnToAnswer;
+  if(inp){inp.disabled=!canSend;inp.placeholder=myTurnToAsk?'Ask your question...':myTurnToAnswer?'Answer the question...':'Not your turn...';}
+  if(sb)sb.disabled=!canSend;
+  if(myTurnToAsk){setText('turn-phase-lbl','YOUR TURN — ask!');startTimer(45);}
+  else if(myTurnToAnswer){setText('turn-phase-lbl','YOUR TURN — answer!');startTimer(45);}
+  else if(phase==='asking'){setText('turn-phase-lbl',askerName+' is asking...');stopTimer();}
+  else{setText('turn-phase-lbl',answererName+' is answering...');stopTimer();}
 }
 
 let timerVal=0;
@@ -2515,8 +2526,13 @@ async function sendMsg(){
   clearTyping();
   const msg={uid:G.uid,username:G.username,avatar:G.equippedAvatar||G.avatar,text:txt,time:Date.now(),ft:ftime(),level:G.level||1};
   await rtdb.ref('lobbies/'+G.lobbyCode+'/messages').push(msg);
-  setTimeout(()=>{ci.disabled=false;if(sb)sb.disabled=false;ci.focus()},300);
-  setTimeout(advOnlineTurn,300);
+  // Phase: asker sends → move to answering phase; answerer sends → advance turn
+  const phase=G.currentPhase||'asking';
+  if(phase==='asking'){
+    setTimeout(()=>rtdb.ref('lobbies/'+G.lobbyCode).update({phase:'answering'}),300);
+  }else{
+    setTimeout(advOnlineTurn,300);
+  }
 }
 
 function appendMsg(msg,msgKey){
@@ -2531,7 +2547,8 @@ function appendMsg(msg,msgKey){
     el.innerHTML=`<div class="msg-sender ghost-sender">👻 ???</div><div class="msg-bubble ghost-bubble">${esc(msg.text)}</div><div class="msg-time">${msg.ft||''}</div>`;
   }else{
     const lvlTag=msg.level?`<span class="lvl-tag">Lv ${msg.level}</span>`:'';
-    el.innerHTML=`${!isMe?`<div class="msg-sender">${esc(msg.username)}${lvlTag}</div>`:''}
+    const avatarTag=msg.avatar?`<span style="margin-right:3px">${msg.avatar}</span>`:'';
+    el.innerHTML=`${!isMe?`<div class="msg-sender">${avatarTag}${esc(msg.username)}${lvlTag}</div>`:''}
       <div class="msg-bubble"${msgKey?` data-key="${msgKey}"`:''}>${esc(msg.text)}</div>
       <div class="msg-time">${msg.ft||''}</div>
       <div class="msg-reactions" id="rxn-${msgKey||''}"></div>`;
@@ -3222,15 +3239,24 @@ function openReportModal(uid,username){
       '</div><div class="gap8"></div><button class="btn btn-ghost" onclick="closeReportModal()">Cancel</button>';
     const ov=$('report-modal');ov.innerHTML='';ov.appendChild(sheet);ov.classList.remove('hidden');return;
   }
-  const typeList=$('report-type-list');if(!typeList)return;
-  const targetName=$('report-target-name');if(targetName)targetName.textContent=`Reporting: ${username||'Player'}`;
-  typeList.innerHTML=REPORT_TYPES.map(t=>`
+  // Always rebuild modal HTML so elements are guaranteed to exist
+  // (the player-picker step replaces innerHTML and removes report-type-list)
+  const ov=$('report-modal');
+  ov.innerHTML=`<div class="report-sheet">
+    <div style="font-size:1rem;font-weight:800;margin-bottom:16px">🚨 Report Player</div>
+    <div id="report-target-name" style="font-size:.88rem;color:var(--text2);margin-bottom:14px">Reporting: ${esc(username||'Player')}</div>
+    <div id="report-type-list"></div>
+    <div class="gap12"></div>
+    <button class="btn btn-danger" id="submit-report-btn" onclick="submitReport()" disabled style="height:50px">Submit Report</button>
+    <div class="gap8"></div>
+    <button class="btn btn-ghost" onclick="closeReportModal()">Cancel</button>
+  </div>`;
+  $('report-type-list').innerHTML=REPORT_TYPES.map(t=>`
     <div class="report-type-btn" id="rtype-${t.id}" onclick="selectReportType('${t.id}')">
       <div class="rt-icon">${t.icon}</div>
       <div><div class="rt-name">${t.name}</div><div class="rt-desc">${t.desc}</div></div>
     </div>`).join('');
-  const submitBtn=$('submit-report-btn');if(submitBtn)submitBtn.disabled=true;
-  $('report-modal').classList.remove('hidden');
+  ov.classList.remove('hidden');
 }
 
 function selectReportType(type){
