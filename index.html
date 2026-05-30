@@ -1449,7 +1449,6 @@ const SHOP = [
   // ONLINE
   {id:'mystery_box',type:'online',icon:'📦',name:'Mystery Box',desc:'A surprise item or prize. Could be BIG!',price:250,val:'mystery'},
   {id:'call_vote',type:'online',icon:'🚨',name:'Emergency Vote',desc:'Call an immediate vote anytime',price:300,val:'call_vote'},
-  {id:'online_hint',type:'online',icon:'🔭',name:'Spy Scope',desc:'As imposter, see first 2 letters of the word',price:200,val:'online_hint'},
   {id:'vote_shield',type:'online',icon:'🛡️',name:'Vote Shield',desc:'Blocks one vote against you',price:350,val:'vote_shield'},
   {id:'ghost_msg',type:'online',icon:'👻',name:'Ghost Message',desc:'Send an anonymous message to confuse others',price:180,val:'ghost_msg'},
   {id:'double_vote',type:'online',icon:'🗳️',name:'Double Vote',desc:'Your vote counts twice',price:400,val:'double_vote'},
@@ -1539,13 +1538,31 @@ function hideSplash(){
 // ══════════════════════════════════════
 auth.onAuthStateChanged(async user=>{
   if(user){
-    if(G.uid===user.uid) return; // already loaded this session
+    if(G.uid===user.uid) return;
     G.uid=user.uid; G.email=user.email||'';
     await loadUser();
     hideSplash();
     go('s-main');
     listenWorldwideLobbies();
+    // Realtime friend requests
+    if(firestoreUnsubscribe)firestoreUnsubscribe();
+    firestoreUnsubscribe=db.collection('users').doc(G.uid).onSnapshot(doc=>{
+      if(!doc.exists)return;
+      const d=doc.data();
+      const oldCount=Object.keys(G.friendRequests||{}).length;
+      G.friendRequests=d.friendRequests||{};
+      G.friends=d.friends||{};
+      G.sentRequests=d.sentRequests||{};
+      const newCount=Object.keys(G.friendRequests).length;
+      const badge=$('req-badge');
+      if(badge){badge.style.display=newCount>0?'inline':'none';badge.textContent='●'}
+      const subBadge=$('friends-badge-sub');
+      if(subBadge&&newCount>0)subBadge.textContent=newCount+' pending request'+(newCount===1?'':'s');
+      if(newCount>oldCount)toast('📬 New friend request!','info');
+      if($('s-friends').classList.contains('active'))loadFriends();
+    });
   }else{
+    if(firestoreUnsubscribe){firestoreUnsubscribe();firestoreUnsubscribe=null}
     G.uid=null;
     hideSplash();
     go('s-login');
@@ -2370,6 +2387,10 @@ function listenLobby(code){
     }
     if(d.status==='revealing'&&!G.revealInitialized)beginOnlineReveal(d);
     if(d.status==='playing'&&!chatStarted)beginOnlineChat(d);
+    if(d.status==='finished'&&!G.cleanupScheduled){
+      G.cleanupScheduled=true;
+      setTimeout(()=>{rtdb.ref('lobbies/'+code).remove().catch(()=>{})},5*60*1000);
+    }
   });
 }
 
@@ -2394,6 +2415,7 @@ async function startOnlineGame(){
     await rtdb.ref('lobbies/'+G.lobbyCode+'/votes').remove();
     await rtdb.ref('lobbies/'+G.lobbyCode+'/gameResult').remove();
     await rtdb.ref('lobbies/'+G.lobbyCode+'/voteResult').remove();
+    G.cleanupScheduled=false;G.resultShown=false;G.impGuessHandled=false;
     await rtdb.ref('lobbies/'+G.lobbyCode).update({
       status:'revealing',gameId,word,impUid,roles,readyPlayers:{},
       totalPlayers:uids.length,turnOrder:shuffle(uids),currentTurnIdx:0,
@@ -2484,12 +2506,6 @@ function beginOnlineChat(d){
       if($('vote-modal').classList.contains('hidden')){$('vote-modal').classList.remove('hidden');openVoteModal();}
     }
     if(ld.status==='roundsUp'){showRoundsModal(ld)}
-    if(ld.status==='imposterGuessing'&&!G.impGuessHandled){
-      G.impGuessHandled=true;
-      closeVoteModal();closeRoundsModal();
-      if(G.myRole==='imposter'){showOnlineGuess(ld);}
-      else{toast('Imposter caught! Waiting for their guess …','info');}
-    }
     if(ld.gameResult&&!G.resultShown){
       G.resultShown=true;
       const gr=ld.gameResult;
@@ -2758,13 +2774,9 @@ function listenVotes(){
       const votedCorrectly=votedOut===impUid;
       const impName=(d.players[impUid]||{}).username||'Imposter';
       const voteResult={votedOut,impName,word:d.word,cat:d.category,votedCorrectly,voteTally:tally};
-      if(votedCorrectly){
-        await rtdb.ref('lobbies/'+G.lobbyCode).update({status:'imposterGuessing',voteResult});
-      }else{
-        const gameResult={...voteResult,guessCorrect:false};
-        await rtdb.ref('lobbies/'+G.lobbyCode+'/gameResult').set(gameResult);
-        await rtdb.ref('lobbies/'+G.lobbyCode).update({status:'finished'});
-      }
+      const gameResult={...voteResult,guessCorrect:false};
+      await rtdb.ref('lobbies/'+G.lobbyCode+'/gameResult').set(gameResult);
+      await rtdb.ref('lobbies/'+G.lobbyCode).update({status:'finished'});
     }
   });
 }
@@ -2830,7 +2842,7 @@ function _resetOnline(){
   if(votesListener&&G.lobbyCode){rtdb.ref('lobbies/'+(G.lobbyCode||'x')+'/votes').off('value',votesListener);votesListener=null}
   if(reactionsRef){reactionsRef.off();reactionsRef=null}
   clearInterval(G.timerInt);chatStarted=false;
-  G.lobbyCode=null;G.isHost=false;G.onlinePlayers=[];G.myOnlineVote=null;G.revealInitialized=false;G.resultShown=false;G.impGuessHandled=false;
+  G.lobbyCode=null;G.isHost=false;G.onlinePlayers=[];G.myOnlineVote=null;G.revealInitialized=false;G.resultShown=false;G.impGuessHandled=false;G.cleanupScheduled=false;
 }
 
 function copyCode(){
@@ -2939,6 +2951,7 @@ function renderShop(){
   grid.className='shop-grid';
   const filtered=SHOP.filter(item=>{
     if(item.hidden)return false;
+    if(item.id==='mystery_box'&&activeShopFilter==='online')return false;
     if(activeShopFilter==='all')return true;
     return item.type===activeShopFilter;
   });
@@ -2966,11 +2979,6 @@ function renderShop(){
       const eq=document.createElement('button');eq.className='btn btn-outline btn-xs';
       eq.style.cssText='margin-top:8px;width:100%;font-size:.75rem';eq.textContent='Equip Theme';
       eq.onclick=e=>{e.stopPropagation();equipTheme(item.val)};el.appendChild(eq);
-    }
-    if(!isTheme&&qty>0&&item.type!=='boost'){
-      const ub=document.createElement('button');ub.className='btn btn-outline btn-xs';
-      ub.style.cssText='margin-top:6px;width:100%;font-size:.75rem';ub.textContent='▶ Use Now';
-      ub.onclick=e=>{e.stopPropagation();useItem(item)};el.appendChild(ub);
     }
     grid.appendChild(el);
   });
@@ -3016,11 +3024,6 @@ function useItem(item){
       G.itemCounts['call_vote']--;saveUser();renderShop();toast('🚨 Emergency vote called!','ok');
       rtdb.ref('lobbies/'+G.lobbyCode).update({status:'voting',votes:{}});
       if(G.isHost)listenVotes();break;
-    case 'online_hint':
-      if(!(G.itemCounts['online_hint']||0)){toast('No spy scope tokens!','err');return}
-      if(!G.lobbyCode||G.myRole!=='imposter'){toast('Use during online play as the imposter!','err');return}
-      G.itemCounts['online_hint']--;saveUser();renderShop();
-      {const w=G.myWord||'';const hint=w.slice(0,2)||'??';toast(`🔭 Word starts with: "${hint}..."${w.length?' ('+w.length+' letters)':''}`, 'ok')}break;
     case 'vote_shield':
       if(!(G.itemCounts['vote_shield']||0)){toast('No vote shields!','err');return}
       if(!G.lobbyCode){toast('Use during an online game!','err');return}
@@ -3082,9 +3085,11 @@ function openMysteryBox(){
   // Generate reward
   const rand100=Math.random()*100;
   let reward;
-  if(rand100<0.4){
+  if(rand100<0.01){
+    reward={icon:'💎',name:'5,000 Coins!!',desc:'LEGENDARY jackpot — you are insanely lucky!',coins:5000};
+  }else if(rand100<0.41){
     reward={icon:'🪙',name:'1,000 Coins!',desc:'You hit the jackpot!',coins:1000};
-  }else if(rand100<1.4){
+  }else if(rand100<1.41){
     reward={icon:'🪙',name:'50 Coins!',desc:'Lucky bonus coins!',coins:50};
   }else{
     const pool=[
@@ -3093,7 +3098,6 @@ function openMysteryBox(){
       {icon:'🛡️',name:'Vote Shield',desc:'Block 1 vote against you',itemId:'vote_shield'},
       {icon:'🍀',name:'Lucky Guess',desc:'Eliminate 2 wrong answers',itemId:'lucky_guess'},
       {icon:'👻',name:'Ghost Message',desc:'Anonymous chat message',itemId:'ghost_msg'},
-      {icon:'🔭',name:'Spy Scope',desc:'See word letters as imposter',itemId:'online_hint'},
       {icon:'🚨',name:'Emergency Vote',desc:'Call a vote anytime',itemId:'call_vote'},
     ];
     reward=pool[Math.floor(Math.random()*pool.length)];
@@ -3222,8 +3226,9 @@ function closeProfileModal(){$('profile-modal').classList.add('hidden');pmCurren
 // ══════════════════════════════════════
 async function sendFriendRequest(targetUid){
   if(!targetUid||!G.uid)return;
+  const addBtn=$('pm-add-friend-btn');
+  if(addBtn){addBtn.disabled=true;addBtn.textContent='Sending...'}
   try{
-    // Add to my sent requests
     G.sentRequests=G.sentRequests||{};
     G.sentRequests[targetUid]=true;
     // Add to target's incoming requests
@@ -3233,7 +3238,7 @@ async function sendFriendRequest(targetUid){
     await saveUser();
     toast('Friend request sent!','ok');
     closeProfileModal();
-  }catch(e){toast('Failed to send request','err')}
+  }catch(e){toast('Failed to send request','err');if(addBtn){addBtn.disabled=false;addBtn.textContent='➕ Add Friend'}}
 }
 
 async function acceptFriend(uid){
@@ -3284,7 +3289,7 @@ function renderFriendTab(tab){
       <div class="friend-row">
         <div class="fr-av">${f.avatar||'😎'}</div>
         <div class="fr-info"><div class="fr-name">${esc(f.username||'Player')}</div><div class="fr-meta">Friends since ${f.since?new Date(f.since).toLocaleDateString():'—'}</div></div>
-        <div class="fr-actions"><button class="btn btn-ghost btn-xs" onclick="inviteFriend('${f.uid}','${esc(f.username||'')}')">Invite</button></div>
+        <div class="fr-actions"></div>
       </div>`).join('')+'</div>';
   }else if(tab==='requests'){
     const reqs=Object.entries(G.friendRequests||{});
@@ -3330,14 +3335,29 @@ async function inviteFriend(uid,name){
 
 async function loadOnlineFriends(){
   const panel=$('online-friends-list');if(!panel)return;
-  const friends=Object.values(G.friends||{});
-  if(!friends.length){panel.textContent='No friends yet.';return}
-  panel.innerHTML='<div class="stack">'+friends.map(f=>`
-    <div class="friend-row" style="padding:10px 12px">
-      <div class="fr-av" style="width:34px;height:34px;font-size:1rem">${f.avatar||'😎'}</div>
-      <div class="fr-info"><div class="fr-name" style="font-size:.85rem">${esc(f.username||'Player')}</div></div>
-      <button class="btn btn-ghost btn-xs" onclick="inviteFriend('${f.uid}','${esc(f.username||'')}')">Invite</button>
-    </div>`).join('')+'</div>';
+  const friendMap=G.friends||{};
+  const friendUids=Object.keys(friendMap);
+  if(!friendUids.length){panel.innerHTML='<div class="text-xs" style="color:var(--text3);padding:8px 0">No friends yet.</div>';return}
+  panel.innerHTML='<div class="text-xs" style="color:var(--text3);padding:6px 0">Checking…</div>';
+  try{
+    const snap=await rtdb.ref('lobbies').orderByChild('status').equalTo('waiting').once('value');
+    const found=[];
+    if(snap.exists()){
+      snap.forEach(s=>{
+        const l=s.val();
+        const lUids=Object.keys(l.players||{});
+        const fUid=lUids.find(u=>friendUids.includes(u));
+        if(fUid&&fUid!==G.uid)found.push({key:s.key,fData:friendMap[fUid]||{uid:fUid,username:'Player',avatar:'😎'}});
+      });
+    }
+    if(!found.length){panel.innerHTML='<div class="text-xs" style="color:var(--text3);padding:8px 0">No friends in open lobbies.</div>';return}
+    panel.innerHTML='<div class="stack">'+found.map(({key,fData})=>`
+      <div class="friend-row" style="padding:8px 10px">
+        <div class="fr-av" style="width:32px;height:32px;font-size:.95rem">${fData.avatar||'😎'}</div>
+        <div class="fr-info"><div class="fr-name" style="font-size:.82rem">${esc(fData.username||'Player')}</div><div class="fr-meta">In lobby ${key}</div></div>
+        <button class="btn btn-primary btn-xs" onclick="joinLobby('${key}')">Join</button>
+      </div>`).join('')+'</div>';
+  }catch(e){panel.innerHTML='<div class="text-xs" style="color:var(--text3);padding:6px 0">Could not load.</div>'}
 }
 
 // ══════════════════════════════════════
@@ -3389,6 +3409,7 @@ function selectReportType(type){
 
 async function submitReport(){
   if(!selectedReportType){toast('Select a report type','err');return}
+  const btn=$('submit-report-btn');if(btn){btn.disabled=true;btn.textContent='Sending...'}
   try{
     // Gather recent chat context
     let chatContext=[];
@@ -3405,7 +3426,7 @@ async function submitReport(){
       lobbyCode:G.lobbyCode||null
     });
     closeReportModal();toast('Report submitted. Our team will review it.','ok');
-  }catch(e){toast('Failed to submit report','err')}
+  }catch(e){toast('Failed to submit report','err');const b=$('submit-report-btn');if(b){b.disabled=false;b.textContent='Submit Report'}}
 }
 
 function closeReportModal(){
