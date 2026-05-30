@@ -449,7 +449,7 @@ body{font-family:'Inter','Cairo',sans-serif;background:var(--bg);color:var(--tex
 .modal-actions{display:flex;flex-direction:column;gap:8px}
 
 /* Inline modals */
-.vote-modal,.rounds-modal{position:fixed;inset:0;background:var(--modal-bg);z-index:8000;display:flex;align-items:flex-end;justify-content:center;padding:0}
+.vote-modal{position:fixed;inset:0;background:var(--modal-bg);z-index:9200;display:flex;align-items:flex-end;justify-content:center;padding:0}.rounds-modal{position:fixed;inset:0;background:var(--modal-bg);z-index:9100;display:flex;align-items:flex-end;justify-content:center;padding:0}
 .vote-modal.hidden,.rounds-modal.hidden{display:none}
 .vote-modal-inner{background:var(--card);border-radius:var(--radius-lg) var(--radius-lg) 0 0;width:100%;max-width:500px;padding:24px 20px 36px;animation:slideUp .3s ease;max-height:80vh;overflow-y:auto}
 .vm-title{font-size:1rem;font-weight:800;margin-bottom:16px}
@@ -1234,6 +1234,7 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
         </div>
       </div>
       <div class="gap16"></div>
+      <div id="r-online-players" style="margin-bottom:8px;display:none"></div>
       <div class="stack">
         <button class="btn btn-primary" id="r-play-again" style="height:54px" onclick="playAgain()">🔄 &nbsp;Play Again</button>
         <button class="btn btn-outline" id="r-home" onclick="go('s-main')">🏠 &nbsp;Main Menu</button>
@@ -1300,6 +1301,9 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
       </div>
       <div class="settings-row">
         <div class="settings-label">Likes Received</div><div class="fw7" id="set-likes">0 ❤️</div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-label">Games Played</div><div class="fw7" id="set-games">0</div>
       </div>
       <div class="settings-row">
         <div class="settings-label">Friends</div><div class="fw7" id="set-friends">0</div>
@@ -1766,6 +1770,7 @@ function renderSettings(){
   setText('set-coins',G.coins+' 🪙');
   setText('set-xp',G.xp);
   setText('set-likes',(G.likes||0)+' ❤️');
+  setText('set-games',G.gamesPlayed||0);
   setText('set-friends',Object.keys(G.friends||{}).length);
   const av=$('set-avatar-display');if(av)av.textContent=G.equippedAvatar||G.avatar;
   const t=$('light-mode-toggle');
@@ -2065,6 +2070,52 @@ function giveUp(){
   showResult({guessCorrect:false,votedCorrectly:G.oVoteResult.votedOut===G.oVoteResult.impName,impName:G.oVoteResult.impName,word:G.oWord,cat:G.oCategory});
 }
 
+// ══════════════════════════════════════
+// ONLINE IMPOSTOR GUESS
+// ══════════════════════════════════════
+function showOnlineGuess(ld){
+  const cat=ld.category||G.lobbyCategory;
+  const word=ld.word;
+  setText('imp-name',G.username);
+  setText('imp-cat',CAT_NAMES[cat]||cat);
+  G.oGuessSelected=null;
+  const btn=$('submit-guess-btn');
+  const gBtn=document.querySelector('#s-guess .btn-ghost');
+  if(btn){btn.disabled=true;btn.onclick=()=>submitOnlineGuessClick(ld);}
+  if(gBtn)gBtn.onclick=()=>onlineGiveUpClick(ld);
+  const pool=(WORDS[cat]||[]).filter(w=>w!==word);
+  const decoys=shuffle(pool).slice(0,7);
+  const opts=shuffle([word,...decoys]);
+  const grid=$('guess-choices');if(!grid)return;
+  grid.innerHTML='';
+  const letters=['A','B','C','D','E','F','G','H'];
+  opts.forEach((w,i)=>{
+    const el=document.createElement('div');el.className='guess-opt';
+    el.innerHTML=`<div class="go-letter">${letters[i]}</div><div class="go-word">${esc(w)}</div>`;
+    el.onclick=()=>{
+      G.oGuessSelected=w;
+      document.querySelectorAll('.guess-opt').forEach(o=>o.classList.remove('selected'));
+      el.classList.add('selected');if(btn)btn.disabled=false;vib();
+    };
+    grid.appendChild(el);
+  });
+  go('s-guess');
+}
+
+async function submitOnlineGuessClick(ld){
+  if(!G.oGuessSelected){toast('Pick an answer first','err');return}
+  const guessCorrect=G.oGuessSelected===ld.word;
+  const gameResult={...(ld.voteResult||{}),guessCorrect};
+  await rtdb.ref('lobbies/'+G.lobbyCode+'/gameResult').set(gameResult);
+  await rtdb.ref('lobbies/'+G.lobbyCode).update({status:'finished'});
+}
+
+async function onlineGiveUpClick(ld){
+  const gameResult={...(ld.voteResult||{}),guessCorrect:false};
+  await rtdb.ref('lobbies/'+G.lobbyCode+'/gameResult').set(gameResult);
+  await rtdb.ref('lobbies/'+G.lobbyCode).update({status:'finished'});
+}
+
 async function showResult(data){
   const{guessCorrect,votedCorrectly,impName,word,cat,isImp,myVoteCorrect,isOnline}=data;
   let emoji,title,desc,coins,xp,rewardNote='';
@@ -2090,7 +2141,17 @@ async function showResult(data){
   setText('r-word',word);setText('r-imp',impName);
   setText('r-coins','+'+coins);setText('r-xp','+'+xp);
   const tally=$('r-tally');
-  if(G.oVotes&&Object.keys(G.oVotes).length){
+  if(isOnline&&data.voteTally&&Object.keys(data.voteTally).length){
+    const players=data.onlinePlayers||G.onlinePlayers||[];
+    const total=players.length||1;
+    tally.innerHTML='<div class="card card-sm" style="background:var(--bg2)"><div class="text-xs fw7" style="margin-bottom:8px">Vote Results</div>'+
+      Object.entries(data.voteTally).sort((a,b)=>b[1]-a[1]).map(([uid,c])=>{
+        const p=players.find(pl=>pl.uid===uid)||{};
+        const name=p.username||uid;
+        return `<div class="tally-row"><span class="fw7">${esc(name)} ${uid===(data.votedOut)?'🎯':''}</span><span class="badge badge-muted">${c} ${c===1?'vote':'votes'}</span></div>
+        <div class="vote-bar-wrap"><div class="vote-bar" style="width:${Math.round((c/total)*100)}%"></div></div>`;
+      }).join('')+'</div>';
+  }else if(G.oVotes&&Object.keys(G.oVotes).length){
     tally.innerHTML='<div class="card card-sm" style="background:var(--bg2)"><div class="text-xs fw7" style="margin-bottom:8px">Vote Results</div>'+
       Object.entries(G.oVotes).sort((a,b)=>b[1]-a[1]).map(([n,c])=>`
         <div class="tally-row"><span class="fw7">${esc(n)} ${n===impName?'🕵️':''}</span><span class="badge badge-muted">${c} ${c===1?'vote':'votes'}</span></div>
@@ -2102,6 +2163,24 @@ async function showResult(data){
   if(raBtn){
     if(isOnline){raBtn.textContent='🏠 Back to Lobby';raBtn.onclick=()=>{if(G.lobbyCode)go('s-lobby');else go('s-online')}}
     else{raBtn.textContent='🔄 Play Again';raBtn.onclick=playAgain}
+  }
+  // Online: show player cards with like/add-friend
+  const playerCards=$('r-online-players');
+  if(playerCards){
+    if(isOnline&&(data.onlinePlayers||G.onlinePlayers||[]).length){
+      const plist=(data.onlinePlayers||G.onlinePlayers).filter(p=>p.uid!==G.uid);
+      playerCards.innerHTML='';
+      if(plist.length){
+        playerCards.innerHTML+='<div class="text-xs fw7" style="margin-bottom:8px;color:var(--text2);text-transform:uppercase;letter-spacing:.06em">Players</div>';
+        plist.forEach(p=>{
+          const card=document.createElement('div');
+          card.className='friend-row';
+          card.innerHTML=`<div class="fr-av">${p.avatar||'😎'}</div><div class="fr-info"><div class="fr-name">${esc(p.username)}</div><div class="fr-meta">Lv ${p.level||1}</div></div><div class="fr-actions"><button class="btn btn-ghost btn-sm" onclick="likePlayer('${p.uid}')">❤️</button><button class="btn btn-outline btn-sm" onclick="viewPlayerProfile('${p.uid}','${esc(p.username)}','${p.avatar||'😎'}',${p.level||1})">+</button></div>`;
+          playerCards.appendChild(card);
+        });
+      }
+      playerCards.style.display='';
+    }else{playerCards.style.display='none';}
   }
   go('s-result');
 }
@@ -2313,6 +2392,8 @@ async function startOnlineGame(){
     const gameId=Date.now();
     await rtdb.ref('lobbies/'+G.lobbyCode+'/messages').remove();
     await rtdb.ref('lobbies/'+G.lobbyCode+'/votes').remove();
+    await rtdb.ref('lobbies/'+G.lobbyCode+'/gameResult').remove();
+    await rtdb.ref('lobbies/'+G.lobbyCode+'/voteResult').remove();
     await rtdb.ref('lobbies/'+G.lobbyCode).update({
       status:'revealing',gameId,word,impUid,roles,readyPlayers:{},
       totalPlayers:uids.length,turnOrder:shuffle(uids),currentTurnIdx:0,
@@ -2392,16 +2473,31 @@ function beginOnlineChat(d){
   listenTyping();listenReactions();
   updateOnlineTurnUI(d);
   startQHints(G.lobbyCategory);
+  G.impGuessHandled=false;G.resultShown=false;
   G.lobbyRef.on('value',sn=>{
     if(!sn.exists())return;
     const ld=sn.val();
-    updateOnlineTurnUI(ld);
+    if(ld.status==='playing'||ld.status==='roundsUp'||ld.status==='voting')updateOnlineTurnUI(ld);
     if(ld.status==='voting'&&G.isHost)listenVotes();
     if(ld.status==='voting'){
-      if(!$('vote-modal').classList.contains('hidden'))return;
-      $('vote-modal').classList.remove('hidden');openVoteModal();
+      closeRoundsModal();
+      if($('vote-modal').classList.contains('hidden')){$('vote-modal').classList.remove('hidden');openVoteModal();}
     }
     if(ld.status==='roundsUp'){showRoundsModal(ld)}
+    if(ld.status==='imposterGuessing'&&!G.impGuessHandled){
+      G.impGuessHandled=true;
+      closeVoteModal();closeRoundsModal();
+      if(G.myRole==='imposter'){showOnlineGuess(ld);}
+      else{toast('Imposter caught! Waiting for their guess …','info');}
+    }
+    if(ld.gameResult&&!G.resultShown){
+      G.resultShown=true;
+      const gr=ld.gameResult;
+      const impUid=ld.impUid;
+      const votes=ld.votes||{};
+      closeVoteModal();closeRoundsModal();
+      showResult({...gr,isOnline:true,isImp:G.uid===impUid,myVoteCorrect:votes[G.uid]===impUid,onlinePlayers:G.onlinePlayers});
+    }
   });
   if(G.isHost)listenVotes();
   // load online friends in join panel
@@ -2429,8 +2525,8 @@ function updateOnlineTurnUI(d){
   const myTurnToAsk=phase==='asking'&&amAsker;
   const myTurnToAnswer=phase==='answering'&&amAnswerer;
   const canSend=myTurnToAsk||myTurnToAnswer;
-  if(inp){inp.disabled=!canSend;inp.placeholder=myTurnToAsk?'Ask your question...':myTurnToAnswer?'Answer the question...':'Not your turn...';}
-  if(sb)sb.disabled=!canSend;
+  if(inp){inp.disabled=(!canSend)||sendingMsg;inp.placeholder=myTurnToAsk?'Ask your question...':myTurnToAnswer?'Answer the question...':'Not your turn...';}
+  if(sb)sb.disabled=(!canSend)||sendingMsg;
   if(myTurnToAsk){setText('turn-phase-lbl','YOUR TURN — ask!');startTimer(45);}
   else if(myTurnToAnswer){setText('turn-phase-lbl','YOUR TURN — answer!');startTimer(45);}
   else if(phase==='asking'){setText('turn-phase-lbl',askerName+' is asking...');stopTimer();}
@@ -2517,7 +2613,10 @@ function listenReactions(){
 // ══════════════════════════════════════
 // CHAT SEND
 // ══════════════════════════════════════
+let sendingMsg=false;
 async function sendMsg(){
+  if(sendingMsg)return;
+  sendingMsg=true;
   const ci=$('chat-in'),sb=$('send-btn');
   let txt=ci.value.trim();if(!txt)return;
   if(containsLink(txt)){toast('Links are not allowed in chat 🚫','err');return}
@@ -2526,6 +2625,7 @@ async function sendMsg(){
   clearTyping();
   const msg={uid:G.uid,username:G.username,avatar:G.equippedAvatar||G.avatar,text:txt,time:Date.now(),ft:ftime(),level:G.level||1};
   await rtdb.ref('lobbies/'+G.lobbyCode+'/messages').push(msg);
+  sendingMsg=false;
   // Phase: asker sends → move to answering; answerer sends → advance turn.
   // Any player (not just host) must be able to write phase/turn to RTDB.
   const phase=G.currentPhase||'asking';
@@ -2649,16 +2749,22 @@ function listenVotes(){
     const total=Object.keys(d.players||{}).length;
     if(Object.keys(votes).length>=total){
       rtdb.ref('lobbies/'+G.lobbyCode+'/votes').off('value',votesListener);votesListener=null;
-      // tally
       const tally={};
       Object.values(votes).forEach(uid=>{tally[uid]=(tally[uid]||0)+1});
       let maxV=0,mostVoted=[];
       Object.entries(tally).forEach(([uid,c])=>{if(c>maxV){maxV=c;mostVoted=[uid]}else if(c===maxV)mostVoted.push(uid)});
       const votedOut=maxV>0?rand(mostVoted):null;
       const impUid=d.impUid;
-      const guessCorrect=false;
-      const result={votedOut,impName:(d.players[impUid]||{}).username||'Imposter',word:d.word,cat:d.category,isOnline:true};
-      showResult({...result,isImp:G.uid===impUid,myVoteCorrect:votes[G.uid]===impUid,votedCorrectly:votedOut===impUid,guessCorrect});
+      const votedCorrectly=votedOut===impUid;
+      const impName=(d.players[impUid]||{}).username||'Imposter';
+      const voteResult={votedOut,impName,word:d.word,cat:d.category,votedCorrectly,voteTally:tally};
+      if(votedCorrectly){
+        await rtdb.ref('lobbies/'+G.lobbyCode).update({status:'imposterGuessing',voteResult});
+      }else{
+        const gameResult={...voteResult,guessCorrect:false};
+        await rtdb.ref('lobbies/'+G.lobbyCode+'/gameResult').set(gameResult);
+        await rtdb.ref('lobbies/'+G.lobbyCode).update({status:'finished'});
+      }
     }
   });
 }
@@ -2724,7 +2830,7 @@ function _resetOnline(){
   if(votesListener&&G.lobbyCode){rtdb.ref('lobbies/'+(G.lobbyCode||'x')+'/votes').off('value',votesListener);votesListener=null}
   if(reactionsRef){reactionsRef.off();reactionsRef=null}
   clearInterval(G.timerInt);chatStarted=false;
-  G.lobbyCode=null;G.isHost=false;G.onlinePlayers=[];G.myOnlineVote=null;G.revealInitialized=false;
+  G.lobbyCode=null;G.isHost=false;G.onlinePlayers=[];G.myOnlineVote=null;G.revealInitialized=false;G.resultShown=false;G.impGuessHandled=false;
 }
 
 function copyCode(){
